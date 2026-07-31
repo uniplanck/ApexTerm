@@ -2979,8 +2979,6 @@ struct RootView: View {
         let screenshotAppearance = ApexInterfaceAppearance(
             rawValue: environment["APEXTERM_README_SCREENSHOT_APPEARANCE"] ?? "dark"
         ) ?? .dark
-        model.interfaceAppearance = screenshotAppearance
-        model.interfaceAccentColorHex = nil
         let appKitAppearance = NSAppearance(
             named: screenshotAppearance == .light ? .aqua : .darkAqua
         )
@@ -3063,6 +3061,13 @@ struct RootView: View {
         }
 
         try? await Task.sleep(for: .milliseconds(scene == "overview" ? 900 : 1_300))
+        if scene == "overview" || scene == "compact" {
+            mainWindow?.setContentSize(contentSize)
+            mainWindow?.center()
+            mainWindow?.displayIfNeeded()
+            mainWindow?.contentView?.layoutSubtreeIfNeeded()
+            try? await Task.sleep(for: .milliseconds(250))
+        }
         let screenshotWritten = environment["APEXTERM_README_SCREENSHOT_OUTPUT_FILE"]
             .map(writeReadmeScreenshot(to:)) ?? false
         let result = [

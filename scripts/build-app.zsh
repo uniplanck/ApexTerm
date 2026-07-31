@@ -4,13 +4,22 @@ set -euo pipefail
 ROOT_DIR="${0:A:h:h}"
 BUILD_CONFIGURATION="${BUILD_CONFIGURATION:-release}"
 OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/.artifacts}"
+SCRATCH_PATH="${SCRATCH_PATH:-$ROOT_DIR/.build}"
+SWIFT_JOBS="${SWIFT_JOBS:-}"
 APP_BUNDLE="$OUTPUT_DIR/ApexTerm.app"
-EXECUTABLE="$ROOT_DIR/.build/$BUILD_CONFIGURATION/ApexTerm"
-GAG_EXECUTABLE="$ROOT_DIR/.build/$BUILD_CONFIGURATION/gag"
+EXECUTABLE="$SCRATCH_PATH/$BUILD_CONFIGURATION/ApexTerm"
+GAG_EXECUTABLE="$SCRATCH_PATH/$BUILD_CONFIGURATION/gag"
+SWIFT_BUILD_ARGS=(
+  --scratch-path "$SCRATCH_PATH"
+  -c "$BUILD_CONFIGURATION"
+)
+if [[ -n "$SWIFT_JOBS" ]]; then
+  SWIFT_BUILD_ARGS+=(-j "$SWIFT_JOBS")
+fi
 
 cd "$ROOT_DIR"
-swift build -c "$BUILD_CONFIGURATION" --product ApexTerm
-swift build -c "$BUILD_CONFIGURATION" --product gag
+swift build "${SWIFT_BUILD_ARGS[@]}" --product ApexTerm
+swift build "${SWIFT_BUILD_ARGS[@]}" --product gag
 
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources/bin"
