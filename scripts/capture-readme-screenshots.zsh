@@ -133,17 +133,32 @@ capture_scene() {
   [[ "$center" != *"255,255,255"* && "$center" != *"ffffff"* ]]
   case "$scene" in
     overview) [[ "$dimensions" == "1324x864" ]] ;;
-    compact) [[ "$dimensions" == "904x574" ]] ;;
+    compact) [[ "$dimensions" == "564x574" ]] ;;
   esac
   /opt/homebrew/bin/magick identify "$output"
 
   terminate_current_process
 }
 
-capture_scene overview overview.png
-capture_scene search universal-search.png
-capture_scene timeline command-timeline.png
-capture_scene settings settings.png
-capture_scene compact compact-tabs.png
+typeset -a scenes
+if [[ -n "${APEXTERM_SCREENSHOT_SCENES:-}" ]]; then
+  scenes=(${=APEXTERM_SCREENSHOT_SCENES})
+else
+  scenes=(overview search timeline settings compact)
+fi
+
+for scene in "${scenes[@]}"; do
+  case "$scene" in
+    overview) capture_scene overview overview.png ;;
+    search) capture_scene search universal-search.png ;;
+    timeline) capture_scene timeline command-timeline.png ;;
+    settings) capture_scene settings settings.png ;;
+    compact) capture_scene compact compact-tabs.png ;;
+    *)
+      print -u2 -r -- "Unknown README screenshot scene: $scene"
+      exit 1
+      ;;
+  esac
+done
 
 printf 'README_SCREENSHOTS=PASS\n'

@@ -3040,9 +3040,11 @@ struct RootView: View {
             model.selectSession(firstSession)
         }
 
-        model.isCompactMode = scene == "compact"
+        // The compact README scene demonstrates narrow responsive tabs, not
+        // Compact Terminal Mode, whose tab strip lives outside contentView.
+        model.isCompactMode = false
         let contentSize = scene == "compact"
-            ? CGSize(width: 760, height: 430)
+            ? CGSize(width: 420, height: 430)
             : CGSize(width: 1_180, height: 720)
         mainWindow?.setContentSize(contentSize)
         mainWindow?.center()
@@ -3061,6 +3063,12 @@ struct RootView: View {
         }
 
         try? await Task.sleep(for: .milliseconds(scene == "overview" ? 900 : 1_300))
+        if scene == "settings", let settingsWindow = mainWindow?.attachedSheet {
+            settingsWindow.setContentSize(CGSize(width: 720, height: 720))
+            settingsWindow.displayIfNeeded()
+            settingsWindow.contentView?.layoutSubtreeIfNeeded()
+            try? await Task.sleep(for: .milliseconds(250))
+        }
         if scene == "overview" || scene == "compact" {
             mainWindow?.setContentSize(contentSize)
             mainWindow?.center()
