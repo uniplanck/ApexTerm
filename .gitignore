@@ -1,0 +1,14 @@
+.build/
+.build-*/
+.artifacts/
+.evidence/
+dist/
+DerivedData/
+.DS_Store
+benchmark-report.json
+*.xcuserstate
+.env
+.env.*
+*.pem
+*.key
+*.p12

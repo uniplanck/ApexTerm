@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#181B21"/>
+      <stop offset="1" stop-color="#06080C"/>
+    </linearGradient>
+    <linearGradient id="apex" x1="0.18" y1="0.1" x2="0.82" y2="0.9">
+      <stop offset="0" stop-color="#3BE7FF"/>
+      <stop offset="0.55" stop-color="#168CFF"/>
+      <stop offset="1" stop-color="#675CFF"/>
+    </linearGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="22" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect x="56" y="56" width="912" height="912" rx="214" fill="url(#bg)"/>
+  <rect x="58" y="58" width="908" height="908" rx="212" fill="none" stroke="#FFFFFF" stroke-opacity="0.14" stroke-width="4"/>
+  <path d="M262 755 L491 248 C499 230 525 230 533 248 L762 755 L657 755 L512 421 L430 611 L538 611 L574 695 L394 695 L368 755 Z" fill="url(#apex)" filter="url(#glow)"/>
+  <path d="M473 516 L512 425 L640 721 L601 721 Z" fill="#DDF8FF" fill-opacity="0.92"/>
+  <path d="M574 786 H760" stroke="#44DFFF" stroke-width="26" stroke-linecap="round"/>
+  <rect x="264" y="786" width="236" height="26" rx="13" fill="#FFFFFF" fill-opacity="0.78"/>
+</svg>
