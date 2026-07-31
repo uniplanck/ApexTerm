@@ -1,0 +1,47 @@
+name: Build X launch assets
+
+on:
+  push:
+    branches:
+      - assets/apexterm-x-launch
+    paths-ignore:
+      - launch-assets/**
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: assets/apexterm-x-launch
+          fetch-depth: 0
+
+      - name: Install rendering dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y imagemagick fonts-noto-cjk fontconfig zip
+
+      - name: Render thumbnails from README screenshots
+        run: python3 tools/generate_x_launch_assets.py
+
+      - name: Verify generated files
+        run: |
+          test "$(find launch-assets -maxdepth 1 -name '*.jpg' | wc -l)" -eq 5
+          identify -format '%f %wx%h\n' launch-assets/*.jpg
+          test -s launch-assets/ApexTerm_X_launch_assets.zip
+
+      - name: Commit generated assets
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add launch-assets
+          if git diff --cached --quiet; then
+            echo "No asset changes"
+            exit 0
+          fi
+          git commit -m "assets: render ApexTerm X launch thumbnails"
+          git push origin HEAD:assets/apexterm-x-launch
