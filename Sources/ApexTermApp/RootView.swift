@@ -224,6 +224,7 @@ struct RootView: View {
             await runShortcutActionsProbeIfRequested()
             await runCommandBlockProbeIfRequested()
             await runLanguageProbeIfRequested()
+            await runReadmeScreenshotSceneIfRequested()
             await runComposerAlignmentProbeIfRequested()
             await runTabLifecycleProbeIfRequested()
             await runCompactTitlebarProbeIfRequested()
@@ -2957,6 +2958,190 @@ struct RootView: View {
             to: URL(fileURLWithPath: outputPath),
             options: [.atomic]
         )
+    }
+
+    @MainActor
+    private func runReadmeScreenshotSceneIfRequested() async {
+        let environment = ProcessInfo.processInfo.environment
+        guard let scene = environment["APEXTERM_README_SCREENSHOT_SCENE"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !scene.isEmpty,
+              let readyPath = environment["APEXTERM_README_SCREENSHOT_READY_FILE"],
+              !readyPath.isEmpty else {
+            return
+        }
+
+        for _ in 0..<120 {
+            if mainWindow != nil { break }
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+
+        let lightAppearance = NSAppearance(named: .aqua)
+        NSApp.appearance = lightAppearance
+        mainWindow?.appearance = lightAppearance
+        model.languageCode = environment["APEXTERM_README_SCREENSHOT_LANGUAGE"] ?? "en"
+        model.isMainWindowPinned = false
+        model.isWorkspaceSidebarCollapsed = false
+        model.isRightSidebarCollapsed = false
+        model.isAgentRailVisible = true
+        model.commandTranscriptMode = .on
+        model.commandBlocksStartCollapsed = false
+
+        while model.workspaces.count < 5 {
+            model.createWorkspace()
+        }
+        let workspaceNames = ["Frontend", "API", "Tests", "Docs", "Deploy"]
+        for (workspace, name) in zip(model.workspaces.prefix(workspaceNames.count), workspaceNames) {
+            model.renameWorkspace(id: workspace.id, to: name)
+        }
+
+        guard let primary = model.workspaces.first else { return }
+        model.selectWorkspace(primary)
+        var sessionIDs = SplitTreeOperations.sessionIDs(in: primary.layout)
+        if sessionIDs.count == 1, let first = sessionIDs.first {
+            model.splitSession(id: first, axis: .vertical)
+        }
+        if let refreshed = model.workspaces.first(where: { $0.id == primary.id }) {
+            sessionIDs = SplitTreeOperations.sessionIDs(in: refreshed.layout)
+        }
+        if sessionIDs.count == 2, let last = sessionIDs.last {
+            model.splitSession(id: last, axis: .horizontal)
+        }
+        if let refreshed = model.workspaces.first(where: { $0.id == primary.id }) {
+            sessionIDs = SplitTreeOperations.sessionIDs(in: refreshed.layout)
+        }
+
+        let paneNames = ["Web", "API", "Tests"]
+        let commands = [
+            ("npm run dev", "Local server ready at http://localhost:3000"),
+            ("swift build --product ApexTerm", "Build complete! (0.82s)"),
+            ("swift test", "Executed 177 tests, with 0 failures")
+        ]
+        let now = Date()
+        for (index, sessionID) in sessionIDs.prefix(3).enumerated() {
+            model.renameSession(id: sessionID, to: paneNames[index])
+            model.recordCommandExecution(
+                CommandExecutionRecord(
+                    sessionID: sessionID,
+                    command: commands[index].0,
+                    output: commands[index].1,
+                    exitCode: 0,
+                    startedAt: now.addingTimeInterval(Double(index) - 4),
+                    finishedAt: now.addingTimeInterval(Double(index) - 3.5)
+                )
+            )
+        }
+        if let firstSession = sessionIDs.first {
+            model.selectSession(firstSession)
+        }
+
+        model.isCompactMode = scene == "compact"
+        let contentSize = scene == "compact"
+            ? CGSize(width: 760, height: 430)
+            : CGSize(width: 1_180, height: 720)
+        mainWindow?.setContentSize(contentSize)
+        mainWindow?.center()
+        mainWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+
+        switch scene {
+        case "search":
+            model.isUniversalSearchPresented = true
+        case "timeline":
+            model.isCommandTimelinePresented = true
+        case "settings":
+            model.isSettingsPresented = true
+        default:
+            break
+        }
+
+        try? await Task.sleep(for: .milliseconds(scene == "overview" ? 900 : 1_300))
+        let screenshotWritten = environment["APEXTERM_README_SCREENSHOT_OUTPUT_FILE"]
+            .map(writeReadmeScreenshot(to:)) ?? false
+        let result = [
+            "scene=\(scene)",
+            "workspaces=\(model.workspaces.count)",
+            "panes=\(sessionIDs.count)",
+            "light_appearance=\(NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .aqua ? 1 : 0)",
+            "screenshot_written=\(screenshotWritten ? 1 : 0)",
+            "ready=1"
+        ].joined(separator: "\n") + "\n"
+        try? Data(result.utf8).write(
+            to: URL(fileURLWithPath: readyPath),
+            options: [.atomic]
+        )
+    }
+
+    @MainActor
+    private func writeReadmeScreenshot(to outputPath: String) -> Bool {
+        guard !outputPath.isEmpty,
+              let window = mainWindow?.attachedSheet ?? mainWindow,
+              let contentView = window.contentView else {
+            return false
+        }
+
+        contentView.layoutSubtreeIfNeeded()
+        let bounds = contentView.bounds
+        guard bounds.width > 0,
+              bounds.height > 0,
+              let sourceRep = contentView.bitmapImageRepForCachingDisplay(in: bounds) else {
+            return false
+        }
+        contentView.cacheDisplay(in: bounds, to: sourceRep)
+
+        let sourceImage = NSImage(size: bounds.size)
+        sourceImage.addRepresentation(sourceRep)
+        let padding: CGFloat = 72
+        let canvasSize = CGSize(
+            width: bounds.width + padding * 2,
+            height: bounds.height + padding * 2
+        )
+        let canvas = NSImage(size: canvasSize)
+        canvas.lockFocus()
+        NSColor.white.setFill()
+        NSBezierPath(rect: CGRect(origin: .zero, size: canvasSize)).fill()
+        sourceImage.draw(
+            in: CGRect(
+                x: padding,
+                y: padding,
+                width: bounds.width,
+                height: bounds.height
+            ),
+            from: CGRect(origin: .zero, size: bounds.size),
+            operation: .sourceOver,
+            fraction: 1
+        )
+        NSColor(calibratedWhite: 0.82, alpha: 1).setStroke()
+        let border = NSBezierPath(
+            roundedRect: CGRect(
+                x: padding - 0.5,
+                y: padding - 0.5,
+                width: bounds.width + 1,
+                height: bounds.height + 1
+            ),
+            xRadius: 8,
+            yRadius: 8
+        )
+        border.lineWidth = 1
+        border.stroke()
+        canvas.unlockFocus()
+
+        guard let tiff = canvas.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiff),
+              let png = bitmap.representation(using: .png, properties: [:]) else {
+            return false
+        }
+        do {
+            let url = URL(fileURLWithPath: outputPath)
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try png.write(to: url, options: [.atomic])
+            return true
+        } catch {
+            return false
+        }
     }
 
     @MainActor
