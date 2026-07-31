@@ -74,6 +74,32 @@ struct AppSettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("Appearance") {
+                Picker("Interface appearance", selection: $model.interfaceAppearance) {
+                    ForEach(ApexInterfaceAppearance.allCases) { appearance in
+                        Text(LocalizedStringKey(appearance.title))
+                            .tag(appearance)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                ColorPicker(
+                    "Accent color",
+                    selection: interfaceAccentColorBinding,
+                    supportsOpacity: false
+                )
+
+                HStack {
+                    Text("The accent color is used for selected tabs, panes, controls, and highlights.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Use system accent") {
+                        model.interfaceAccentColorHex = nil
+                    }
+                }
+            }
+
             Section("Window Behavior") {
                 Toggle("Compact Terminal Mode", isOn: $model.isCompactMode)
                 Toggle("Pin Main Window Above Others", isOn: $model.isMainWindowPinned)
@@ -191,6 +217,15 @@ struct AppSettingsView: View {
         }
         .formStyle(.grouped)
         .padding(.horizontal, 8)
+    }
+
+    private var interfaceAccentColorBinding: Binding<Color> {
+        Binding(
+            get: { Color(nsColor: model.interfaceAccentNSColor) },
+            set: { color in
+                model.interfaceAccentColorHex = NSColor(color).apexHex
+            }
+        )
     }
 
     private func terminalColorBinding(

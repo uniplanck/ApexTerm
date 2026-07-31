@@ -33,7 +33,7 @@ ApexTerm은 탭, 분할 패널, 명령 기록, 검색 가능한 히스토리, tm
 
 ![언어, 터미널, 명령 기록 설정](images/settings.png)
 
-Settings에서 앱 언어, 터미널 동작, 명령 기록, 사이드바, 단축키, UI 컨트롤, 원격 호스트와 선택형 DevSpace 안내를 변경할 수 있습니다.
+Settings에서 앱 언어, 인터페이스 모양, 강조 색상, 터미널 동작, 명령 기록, 사이드바, 단축키, UI 컨트롤, 원격 호스트와 선택형 DevSpace 안내를 변경할 수 있습니다.
 
 ### 컴팩트 탭
 
@@ -61,7 +61,7 @@ zsh scripts/build-app.zsh
 zsh scripts/capture-readme-screenshots.zsh
 ```
 
-스크립트는 격리된 데모 앱을 실행하고 다섯 개의 기능 장면을 자동 캡처한 뒤, 흰색 배경 이미지로 `docs/images/`에 저장합니다. 평소 사용 중인 ApexTerm 세션은 종료하거나 변경하지 않습니다.
+스크립트는 격리된 데모 앱을 실행하고 ApexTerm의 다크 인터페이스를 유지한 채 다섯 개의 기능 장면을 둥근 흰색 프레젠테이션 배경에 배치해 `docs/images/`에 저장합니다. 평소 사용 중인 ApexTerm 세션은 종료하거나 변경하지 않습니다.
 
 ## 선택형 DevSpace 연동
 

@@ -33,7 +33,7 @@ ApexTerm 是原生 macOS 終端工作區，整合分頁、分割窗格、命令�
 
 ![語言、終端與命令紀錄設定](images/settings.png)
 
-可在 Settings 修改應用程式語言、終端行為、命令紀錄、側邊欄、快捷鍵、UI 控制項、遠端主機與選用的 DevSpace 說明。
+可在 Settings 修改應用程式語言、介面外觀、強調色、終端行為、命令紀錄、側邊欄、快捷鍵、UI 控制項、遠端主機與選用的 DevSpace 說明。
 
 ### 精簡分頁
 
@@ -61,7 +61,7 @@ zsh scripts/build-app.zsh
 zsh scripts/capture-readme-screenshots.zsh
 ```
 
-腳本會啟動隔離的示範應用程式，自動擷取五個功能場景，並將白色背景圖片輸出到 `docs/images/`。不會關閉或修改日常使用中的 ApexTerm 工作階段。
+腳本會啟動隔離的示範應用程式，保留 ApexTerm 的深色介面，並把五個功能場景放入圓角白色展示背景後輸出到 `docs/images/`。不會關閉或修改日常使用中的 ApexTerm 工作階段。
 
 ## 選用的 DevSpace 連接
 

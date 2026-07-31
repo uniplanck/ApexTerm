@@ -1,3 +1,5 @@
+import ApexTermCore
+import AppKit
 import SwiftUI
 
 @main
@@ -8,6 +10,8 @@ struct ApexTermApp: App {
     var body: some Scene {
         WindowGroup("ApexTerm") {
             RootView(model: model)
+                .preferredColorScheme(model.interfaceAppearance.colorScheme)
+                .tint(Color(nsColor: model.interfaceAccentNSColor))
                 .frame(
                     minWidth: ApexTermWindowSizing.mainMinimumContentSize.width,
                     minHeight: ApexTermWindowSizing.mainMinimumContentSize.height
@@ -193,8 +197,20 @@ struct ApexTermApp: App {
 
         Window("Quick Terminal", id: "quick-terminal") {
             QuickTerminalView()
+                .preferredColorScheme(model.interfaceAppearance.colorScheme)
+                .tint(Color(nsColor: model.interfaceAccentNSColor))
         }
         .defaultSize(width: 680, height: 340)
         .windowResizability(.automatic)
+    }
+}
+
+private extension ApexInterfaceAppearance {
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: nil
+        case .light: .light
+        case .dark: .dark
+        }
     }
 }

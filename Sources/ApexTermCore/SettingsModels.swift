@@ -119,6 +119,22 @@ public enum CommandTranscriptMode: String, Codable, CaseIterable, Identifiable, 
     }
 }
 
+public enum ApexInterfaceAppearance: String, Codable, CaseIterable, Identifiable, Sendable {
+    case system
+    case light
+    case dark
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .system: "System"
+        case .light: "Light"
+        case .dark: "Dark"
+        }
+    }
+}
+
 public struct ApexTerminalProfile: Codable, Equatable, Identifiable, Sendable {
     public var id: UUID
     public var name: String
@@ -167,6 +183,8 @@ public struct ApexTerminalProfile: Codable, Equatable, Identifiable, Sendable {
 
 public struct ApexGeneralSettings: Codable, Equatable, Sendable {
     public var languageCode: String
+    public var interfaceAppearance: ApexInterfaceAppearance?
+    public var accentColorHex: String?
     public var compactMode: Bool
     public var pinMainWindow: Bool
     public var collapseLeftSidebar: Bool
@@ -179,6 +197,8 @@ public struct ApexGeneralSettings: Codable, Equatable, Sendable {
 
     public init(
         languageCode: String = "system",
+        interfaceAppearance: ApexInterfaceAppearance? = nil,
+        accentColorHex: String? = nil,
         compactMode: Bool = false,
         pinMainWindow: Bool = false,
         collapseLeftSidebar: Bool = false,
@@ -190,6 +210,8 @@ public struct ApexGeneralSettings: Codable, Equatable, Sendable {
         autoCollapseLineThreshold: Int = 160
     ) {
         self.languageCode = languageCode
+        self.interfaceAppearance = interfaceAppearance
+        self.accentColorHex = accentColorHex
         self.compactMode = compactMode
         self.pinMainWindow = pinMainWindow
         self.collapseLeftSidebar = collapseLeftSidebar

@@ -295,6 +295,35 @@ final class AppModel: ObservableObject {
             synchronizeSettingsDocument()
         }
     }
+    @Published var interfaceAppearance = ApexInterfaceAppearance(
+        rawValue: UserDefaults.standard.string(forKey: "apexterm.interface.appearance") ?? ""
+    ) ?? .system {
+        didSet {
+            UserDefaults.standard.set(
+                interfaceAppearance.rawValue,
+                forKey: "apexterm.interface.appearance"
+            )
+            synchronizeSettingsDocument()
+        }
+    }
+    @Published var interfaceAccentColorHex = UserDefaults.standard.string(
+        forKey: "apexterm.interface.accentColor"
+    ) {
+        didSet {
+            if let interfaceAccentColorHex,
+               !interfaceAccentColorHex.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                UserDefaults.standard.set(
+                    interfaceAccentColorHex,
+                    forKey: "apexterm.interface.accentColor"
+                )
+            } else {
+                UserDefaults.standard.removeObject(
+                    forKey: "apexterm.interface.accentColor"
+                )
+            }
+            synchronizeSettingsDocument()
+        }
+    }
     @Published private(set) var persistenceMessage: String?
     @Published private(set) var transientNotice: String?
 
@@ -702,6 +731,8 @@ final class AppModel: ObservableObject {
         secureKeyboardEntryEnabled = profile.secureKeyboardEntryEnabled
 
         languageCode = document.general.languageCode
+        interfaceAppearance = document.general.interfaceAppearance ?? .system
+        interfaceAccentColorHex = document.general.accentColorHex
         isCompactMode = document.general.compactMode
         isMainWindowPinned = document.general.pinMainWindow
         isWorkspaceSidebarCollapsed = document.general.collapseLeftSidebar
@@ -738,6 +769,8 @@ final class AppModel: ObservableObject {
         document.profiles[profileIndex].secureKeyboardEntryEnabled = secureKeyboardEntryEnabled
 
         document.general.languageCode = languageCode
+        document.general.interfaceAppearance = interfaceAppearance
+        document.general.accentColorHex = interfaceAccentColorHex
         document.general.compactMode = isCompactMode
         document.general.pinMainWindow = isMainWindowPinned
         document.general.collapseLeftSidebar = isWorkspaceSidebarCollapsed
@@ -780,6 +813,12 @@ final class AppModel: ObservableObject {
 
     var appLanguage: AppLanguage {
         AppLanguage.resolve(languageCode)
+    }
+
+    var interfaceAccentNSColor: NSColor {
+        interfaceAccentColorHex
+            .flatMap(NSColor.init(apexHex:))
+            ?? .controlAccentColor
     }
 
     var terminalAppearance: TerminalAppearance {

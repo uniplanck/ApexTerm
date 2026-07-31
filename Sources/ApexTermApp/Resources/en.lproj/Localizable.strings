@@ -54,3 +54,11 @@
 "Rename" = "Rename";
 "Open" = "Open";
 "Creates or attaches to the named local tmux session in a new tab." = "Creates or attaches to the named local tmux session in a new tab.";
+"Appearance" = "Appearance";
+"Interface appearance" = "Interface appearance";
+"System" = "System";
+"Light" = "Light";
+"Dark" = "Dark";
+"Accent color" = "Accent color";
+"The accent color is used for selected tabs, panes, controls, and highlights." = "The accent color is used for selected tabs, panes, controls, and highlights.";
+"Use system accent" = "Use system accent";

@@ -65,6 +65,12 @@ enum AppSettingsMigration {
         let general = ApexGeneralSettings(
             languageCode: defaults.string(forKey: AppLanguage.defaultsKey)
                 ?? AppLanguage.system.rawValue,
+            interfaceAppearance: defaults.string(
+                forKey: "apexterm.interface.appearance"
+            ).flatMap(ApexInterfaceAppearance.init(rawValue:)) ?? .system,
+            accentColorHex: defaults.string(
+                forKey: "apexterm.interface.accentColor"
+            ),
             compactMode: defaults.bool(forKey: "apexterm.compactMode"),
             pinMainWindow: defaults.bool(forKey: "apexterm.mainWindowPinned"),
             collapseLeftSidebar: defaults.bool(

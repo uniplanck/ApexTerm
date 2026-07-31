@@ -54,3 +54,11 @@
 "Rename" = "重新命名";
 "Open" = "開啟";
 "Creates or attaches to the named local tmux session in a new tab." = "在新分頁中建立或連接指定的本機tmux工作階段。";
+"Appearance" = "外觀";
+"Interface appearance" = "介面外觀";
+"System" = "跟隨系統";
+"Light" = "淺色";
+"Dark" = "深色";
+"Accent color" = "強調色";
+"The accent color is used for selected tabs, panes, controls, and highlights." = "強調色會套用於選取的分頁、窗格、控制項與醒目提示。";
+"Use system accent" = "使用系統強調色";

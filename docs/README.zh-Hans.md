@@ -33,7 +33,7 @@ ApexTerm 是一个原生 macOS 终端工作区，集成了标签页、分割窗�
 
 ![语言、终端与命令记录设置](images/settings.png)
 
-可在 Settings 中修改应用语言、终端行为、命令记录、侧边栏、快捷键、UI 控件、远程主机和可选 DevSpace 说明。
+可在 Settings 中修改应用语言、界面外观、强调色、终端行为、命令记录、侧边栏、快捷键、UI 控件、远程主机和可选 DevSpace 说明。
 
 ### 紧凑标签页
 
@@ -61,7 +61,7 @@ zsh scripts/build-app.zsh
 zsh scripts/capture-readme-screenshots.zsh
 ```
 
-脚本会启动隔离的演示应用，自动截取五个功能场景，并合成白色背景图片到 `docs/images/`。不会关闭或修改日常使用中的 ApexTerm 会话。
+脚本会启动隔离的演示应用，在保留 ApexTerm 深色界面的同时，将五个功能场景放入圆角白色展示背景并写入 `docs/images/`。不会关闭或修改日常使用中的 ApexTerm 会话。
 
 ## 可选 DevSpace 连接
 

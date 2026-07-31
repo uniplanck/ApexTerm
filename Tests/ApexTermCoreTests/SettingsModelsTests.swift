@@ -11,6 +11,8 @@ final class SettingsModelsTests: XCTestCase {
 
         XCTAssertEqual(document.activeProfile.id, ApexSettingsDocument.defaultProfileID)
         XCTAssertEqual(document.activeProfile.name, "Default")
+        XCTAssertNil(document.general.interfaceAppearance)
+        XCTAssertNil(document.general.accentColorHex)
         XCTAssertEqual(
             document.keybinding(for: "search.universal")?.chord.displayName,
             "⌘K"
@@ -138,6 +140,8 @@ final class SettingsModelsTests: XCTestCase {
             profiles: [profile],
             general: ApexGeneralSettings(
                 languageCode: "ja",
+                interfaceAppearance: .dark,
+                accentColorHex: "#FF3366",
                 compactMode: true,
                 autoCollapseLineThreshold: 320
             )
@@ -154,6 +158,30 @@ final class SettingsModelsTests: XCTestCase {
             (attributes[.posixPermissions] as? NSNumber)?.intValue,
             0o600
         )
+    }
+
+    func testLegacyGeneralSettingsDecodeWithoutAppearanceFields() throws {
+        let data = Data(
+            """
+            {
+              "languageCode": "en",
+              "compactMode": false,
+              "pinMainWindow": false,
+              "collapseLeftSidebar": false,
+              "collapseRightSidebar": false,
+              "showCommandHistory": true,
+              "confirmMultilinePaste": false,
+              "autoCopyCommandOutput": false,
+              "autoCollapseLargeOutputs": true,
+              "autoCollapseLineThreshold": 160
+            }
+            """.utf8
+        )
+
+        let settings = try JSONDecoder().decode(ApexGeneralSettings.self, from: data)
+
+        XCTAssertNil(settings.interfaceAppearance)
+        XCTAssertNil(settings.accentColorHex)
     }
 
     func testMissingSettingsFileReturnsProvidedDefaults() async throws {

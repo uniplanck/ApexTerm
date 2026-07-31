@@ -33,7 +33,7 @@ Filter commands and agent events by kind, failure state, session, and query. Mar
 
 ![ApexTerm Settings for language, terminal, and transcript controls](docs/images/settings.png)
 
-Change the application language, terminal behavior, transcript mode, sidebars, keybindings, UI controls, remote hosts, and the optional DevSpace companion from Settings.
+Change the application language, interface appearance, accent color, terminal behavior, transcript mode, sidebars, keybindings, UI controls, remote hosts, and the optional DevSpace companion from Settings.
 
 ### Compact tabs
 
@@ -61,7 +61,7 @@ The signed local application is written to `.artifacts/ApexTerm.app` by default.
 zsh scripts/capture-readme-screenshots.zsh
 ```
 
-The script launches an isolated demo build, captures five deterministic feature scenes, composites them onto a white background, and writes the results to `docs/images/`. It does not close or modify a normally running ApexTerm session.
+The script launches an isolated demo build, captures five deterministic feature scenes with ApexTerm's dark interface intact, and places each app view inside a rounded white presentation canvas. It writes the results to `docs/images/` without closing or modifying a normally running ApexTerm session.
 
 ## Optional DevSpace companion
 

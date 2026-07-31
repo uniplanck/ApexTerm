@@ -54,3 +54,11 @@
 "Rename" = "이름 변경";
 "Open" = "열기";
 "Creates or attaches to the named local tmux session in a new tab." = "새 탭에서 지정한 로컬 tmux 세션을 만들거나 연결합니다.";
+"Appearance" = "모양";
+"Interface appearance" = "인터페이스 모양";
+"System" = "시스템";
+"Light" = "라이트";
+"Dark" = "다크";
+"Accent color" = "강조 색상";
+"The accent color is used for selected tabs, panes, controls, and highlights." = "강조 색상은 선택된 탭, 창, 컨트롤 및 강조 표시에 사용됩니다.";
+"Use system accent" = "시스템 강조 색상 사용";

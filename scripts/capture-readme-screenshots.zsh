@@ -54,6 +54,7 @@ capture_scene() {
     APEXTERM_SUPPORT_DIRECTORY="$support" \
     APEXTERM_README_SCREENSHOT_SCENE="$scene" \
     APEXTERM_README_SCREENSHOT_LANGUAGE="en" \
+    APEXTERM_README_SCREENSHOT_APPEARANCE="dark" \
     APEXTERM_README_SCREENSHOT_READY_FILE="$ready" \
     APEXTERM_README_SCREENSHOT_OUTPUT_FILE="$output" \
     "$EXECUTABLE" >"$app_log" 2>&1 &
@@ -72,12 +73,14 @@ capture_scene() {
   done
   [[ -f "$ready" ]]
   grep -Fqx 'ready=1' "$ready"
-  grep -Fqx 'light_appearance=1' "$ready"
+  grep -Fqx 'app_appearance=dark' "$ready"
   grep -Fqx 'screenshot_written=1' "$ready"
   [[ -s "$output" ]]
 
   local corner="$(/opt/homebrew/bin/magick "$output" -format '%[pixel:p{0,0}]' info:)"
+  local center="$(/opt/homebrew/bin/magick "$output" -format '%[pixel:p{w/2,h/2}]' info:)"
   [[ "$corner" == *"255,255,255"* || "$corner" == *"ffffff"* ]]
+  [[ "$center" != *"255,255,255"* && "$center" != *"ffffff"* ]]
   /opt/homebrew/bin/magick identify "$output"
 
   kill "$pid" 2>/dev/null || true

@@ -33,7 +33,7 @@ ApexTermは、タブ・分割ペイン・コマンド履歴・tmux・ショー�
 
 ![言語、ターミナル、履歴表示を変更できるSettings](images/settings.png)
 
-アプリの表示言語、ターミナル表示、履歴、サイドバー、ショートカット、DevSpace案内をSettingsから変更できます。
+アプリの表示言語、外観モード、アクセントカラー、ターミナル表示、履歴、サイドバー、ショートカット、DevSpace案内をSettingsから変更できます。
 
 ### コンパクト表示
 
@@ -61,7 +61,7 @@ zsh scripts/build-app.zsh
 zsh scripts/capture-readme-screenshots.zsh
 ```
 
-スクリプトは独立したApexTermデモアプリを起動し、白背景の画像を`docs/images/`へ生成します。通常使用中のApexTermやそのセッションは終了しません。
+スクリプトは独立したApexTermデモアプリを起動し、ApexTerm本体のダーク配色を維持したまま、角丸の白いプレゼンテーション背景へ配置して`docs/images/`へ生成します。通常使用中のApexTermやそのセッションは終了しません。
 
 ## 任意のDevSpace連携
 

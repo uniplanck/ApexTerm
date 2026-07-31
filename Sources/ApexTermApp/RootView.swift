@@ -2976,9 +2976,16 @@ struct RootView: View {
             try? await Task.sleep(for: .milliseconds(25))
         }
 
-        let lightAppearance = NSAppearance(named: .aqua)
-        NSApp.appearance = lightAppearance
-        mainWindow?.appearance = lightAppearance
+        let screenshotAppearance = ApexInterfaceAppearance(
+            rawValue: environment["APEXTERM_README_SCREENSHOT_APPEARANCE"] ?? "dark"
+        ) ?? .dark
+        model.interfaceAppearance = screenshotAppearance
+        model.interfaceAccentColorHex = nil
+        let appKitAppearance = NSAppearance(
+            named: screenshotAppearance == .light ? .aqua : .darkAqua
+        )
+        NSApp.appearance = appKitAppearance
+        mainWindow?.appearance = appKitAppearance
         model.languageCode = environment["APEXTERM_README_SCREENSHOT_LANGUAGE"] ?? "en"
         model.isMainWindowPinned = false
         model.isWorkspaceSidebarCollapsed = false
@@ -3062,7 +3069,7 @@ struct RootView: View {
             "scene=\(scene)",
             "workspaces=\(model.workspaces.count)",
             "panes=\(sessionIDs.count)",
-            "light_appearance=\(NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .aqua ? 1 : 0)",
+            "app_appearance=\(screenshotAppearance.rawValue)",
             "screenshot_written=\(screenshotWritten ? 1 : 0)",
             "ready=1"
         ].joined(separator: "\n") + "\n"
@@ -3100,27 +3107,47 @@ struct RootView: View {
         canvas.lockFocus()
         NSColor.white.setFill()
         NSBezierPath(rect: CGRect(origin: .zero, size: canvasSize)).fill()
+        let appFrame = CGRect(
+            x: padding,
+            y: padding,
+            width: bounds.width,
+            height: bounds.height
+        )
+        let cornerRadius: CGFloat = 14
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor.black.withAlphaComponent(0.18)
+        shadow.shadowBlurRadius = 24
+        shadow.shadowOffset = NSSize(width: 0, height: -8)
+
+        NSGraphicsContext.saveGraphicsState()
+        shadow.set()
+        NSColor.windowBackgroundColor.setFill()
+        NSBezierPath(
+            roundedRect: appFrame,
+            xRadius: cornerRadius,
+            yRadius: cornerRadius
+        ).fill()
+        NSGraphicsContext.restoreGraphicsState()
+
+        NSGraphicsContext.saveGraphicsState()
+        NSBezierPath(
+            roundedRect: appFrame,
+            xRadius: cornerRadius,
+            yRadius: cornerRadius
+        ).addClip()
         sourceImage.draw(
-            in: CGRect(
-                x: padding,
-                y: padding,
-                width: bounds.width,
-                height: bounds.height
-            ),
+            in: appFrame,
             from: CGRect(origin: .zero, size: bounds.size),
             operation: .sourceOver,
             fraction: 1
         )
-        NSColor(calibratedWhite: 0.82, alpha: 1).setStroke()
+        NSGraphicsContext.restoreGraphicsState()
+
+        NSColor(calibratedWhite: 0.78, alpha: 1).setStroke()
         let border = NSBezierPath(
-            roundedRect: CGRect(
-                x: padding - 0.5,
-                y: padding - 0.5,
-                width: bounds.width + 1,
-                height: bounds.height + 1
-            ),
-            xRadius: 8,
-            yRadius: 8
+            roundedRect: appFrame.insetBy(dx: -0.5, dy: -0.5),
+            xRadius: cornerRadius + 0.5,
+            yRadius: cornerRadius + 0.5
         )
         border.lineWidth = 1
         border.stroke()
