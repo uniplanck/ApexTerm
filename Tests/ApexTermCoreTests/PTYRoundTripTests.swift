@@ -1,3 +1,5 @@
+@testable import ApexTermApp
+import ApexTermCore
 import AppKit
 import SwiftTerm
 import XCTest
@@ -93,6 +95,59 @@ final class PTYRoundTripTests: XCTestCase {
         let didReceive = received
         lock.unlock()
         XCTAssertTrue(didReceive)
+    }
+
+    @MainActor
+    func testPromptStartRestoresControlCAfterKittyModeWasLeftEnabled() throws {
+        let terminal = ApexLocalProcessTerminalView(
+            frame: CGRect(x: 0, y: 0, width: 640, height: 480)
+        )
+        terminal.terminal.feed(text: "\u{001B}[=1;1u")
+        for _ in 0..<16 {
+            terminal.terminal.feed(text: "\u{001B}[>8u")
+        }
+        XCTAssertFalse(terminal.terminal.keyboardEnhancementFlags.isEmpty)
+
+        terminal.handleSemanticEvent(.promptStarted)
+
+        XCTAssertTrue(terminal.terminal.keyboardEnhancementFlags.isEmpty)
+
+        let observer = ProcessTerminationObserver()
+        let interrupted = expectation(description: "foreground PTY process interrupted")
+        observer.onTermination = {
+            interrupted.fulfill()
+        }
+        terminal.processDelegate = observer
+        terminal.startProcess(
+            executable: "/bin/cat",
+            args: [],
+            environment: Terminal.getEnvironmentVariables(termName: "xterm-256color")
+        )
+        defer {
+            if terminal.process.running {
+                terminal.terminate()
+            }
+        }
+
+        Thread.sleep(forTimeInterval: 0.05)
+        let event = try XCTUnwrap(
+            NSEvent.keyEvent(
+                with: .keyDown,
+                location: .zero,
+                modifierFlags: .control,
+                timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: 0,
+                context: nil,
+                characters: "c",
+                charactersIgnoringModifiers: "c",
+                isARepeat: false,
+                keyCode: 8
+            )
+        )
+
+        terminal.keyDown(with: event)
+
+        wait(for: [interrupted], timeout: 2)
     }
 
     @MainActor

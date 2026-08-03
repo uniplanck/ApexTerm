@@ -58,6 +58,7 @@ let package = Package(
         .testTarget(
             name: "ApexTermCoreTests",
             dependencies: [
+                "ApexTermApp",
                 "ApexTermCore",
                 .product(name: "SwiftTerm", package: "SwiftTerm")
             ]

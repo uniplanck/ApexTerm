@@ -1357,10 +1357,10 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
         }
     }
 
-    private func handleSemanticEvent(_ event: ShellSemanticEvent) {
+    func handleSemanticEvent(_ event: ShellSemanticEvent) {
         switch event {
         case .promptStarted:
-            break
+            clearResidualKittyKeyboardModeAtPrompt()
         case .commandInputStarted:
             onPromptStarted?(terminal.buffer.y)
         case let .commandCaptured(command):
@@ -1376,6 +1376,15 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
             isCapturingOutput = false
             finalizeCapturedCommand(exitCode: exitCode ?? 0)
         }
+    }
+
+    private func clearResidualKittyKeyboardModeAtPrompt() {
+        guard !terminal.keyboardEnhancementFlags.isEmpty else { return }
+
+        // A TUI can terminate before restoring the Kitty keyboard mode it pushed.
+        // Pop beyond SwiftTerm's 16-entry stack limit at a fresh shell prompt so
+        // Control-C returns to the legacy 0x03 byte expected by the PTY line discipline.
+        terminal.feed(text: "\u{001B}[<17u")
     }
 
     private func appendCapturedOutput(_ bytes: ArraySlice<UInt8>) {
