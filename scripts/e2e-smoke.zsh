@@ -48,6 +48,36 @@ status_to() {
   APEXTERM_SUPPORT_DIRECTORY="$support" "$CTL" status > "$output"
 }
 
+wait_agent_state() {
+  local support="$1"
+  local output="$2"
+  local run_id="$3"
+  local expected_state="$4"
+  local expected_progress="$5"
+  local expected_active_count="$6"
+  local expected_message="${7:--}"
+
+  for _ in {1..100}; do
+    status_to "$support" "$output"
+    if ruby -rjson -e '
+      j = JSON.parse(File.read(ARGV[0]))
+      run = j.fetch("agents").find { |item| item["id"] == ARGV[1] }
+      expected_progress = ARGV[3] == "-" ? nil : ARGV[3].to_f
+      expected_message = ARGV[5]
+      valid = run &&
+        run["state"] == ARGV[2] &&
+        j["activeAgentCount"] == ARGV[4].to_i
+      valid &&= (run["progress"].to_f - expected_progress).abs < 0.0001 if expected_progress
+      valid &&= run["message"] == expected_message unless expected_message == "-"
+      exit(valid ? 0 : 1)
+    ' "$output" "$run_id" "$expected_state" "$expected_progress" "$expected_active_count" "$expected_message"; then
+      return 0
+    fi
+    sleep 0.05
+  done
+  return 1
+}
+
 selected_session_id() {
   ruby -rjson -e 'print JSON.parse(File.read(ARGV[0]))["selectedSessionID"]' "$1"
 }
@@ -84,28 +114,32 @@ wait_ready "$ready_agent" "$pid_agent"
 run_id="$(uuidgen)"
 APEXTERM_SUPPORT_DIRECTORY="$support_agent" "$CTL" \
   agent "$run_id" running gag ApexTermBuild "$ROOT" 0.35 Compiling >/dev/null
-sleep 0.15
-status_to "$support_agent" "$TMP_ROOT/agent-running.json"
-ruby -rjson -e '
-  j=JSON.parse(File.read(ARGV[0])); a=j.fetch("agents").first
-  abort unless j["activeAgentCount"] == 1 && a["state"] == "running" && a["progress"] == 0.35
-' "$TMP_ROOT/agent-running.json"
+wait_agent_state \
+  "$support_agent" \
+  "$TMP_ROOT/agent-running.json" \
+  "$run_id" \
+  running \
+  0.35 \
+  1
 APEXTERM_SUPPORT_DIRECTORY="$support_agent" "$CTL" \
   agent "$run_id" waitingApproval gag ApexTermBuild "$ROOT" 0.6 ApprovalRequired >/dev/null
-sleep 0.15
-status_to "$support_agent" "$TMP_ROOT/agent-approval.json"
-ruby -rjson -e '
-  j=JSON.parse(File.read(ARGV[0])); a=j.fetch("agents").first
-  abort unless a["state"] == "waitingApproval" && a["message"] == "ApprovalRequired"
-' "$TMP_ROOT/agent-approval.json"
+wait_agent_state \
+  "$support_agent" \
+  "$TMP_ROOT/agent-approval.json" \
+  "$run_id" \
+  waitingApproval \
+  0.6 \
+  1 \
+  ApprovalRequired
 APEXTERM_SUPPORT_DIRECTORY="$support_agent" "$CTL" \
   agent "$run_id" succeeded gag ApexTermBuild "$ROOT" 1 Done >/dev/null
-sleep 0.15
-status_to "$support_agent" "$TMP_ROOT/agent-done.json"
-ruby -rjson -e '
-  j=JSON.parse(File.read(ARGV[0])); a=j.fetch("agents").first
-  abort unless j["activeAgentCount"] == 0 && a["state"] == "succeeded" && a["progress"] == 1
-' "$TMP_ROOT/agent-done.json"
+wait_agent_state \
+  "$support_agent" \
+  "$TMP_ROOT/agent-done.json" \
+  "$run_id" \
+  succeeded \
+  1 \
+  0
 kill "$pid_agent" 2>/dev/null || true
 wait "$pid_agent" 2>/dev/null || true
 APP_PIDS=(${APP_PIDS:#$pid_agent})
