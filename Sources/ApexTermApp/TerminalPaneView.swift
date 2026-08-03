@@ -122,6 +122,9 @@ struct TerminalPaneView: NSViewRepresentable {
         terminal.commandBlocksEnabled = session.commandBlocksEnabled
         terminal.smartPasteProtectionEnabled = session.smartPasteProtectionEnabled
         terminal.multilinePasteConfirmationEnabled = session.multilinePasteConfirmationEnabled
+        terminal.configureTrustPolicy(session.escapeSequenceTrustPolicy)
+        terminal.configureInlineImageSafetyPolicy(session.inlineImageSafetyPolicy)
+        terminal.configureResourceBudget()
         terminal.onActivate = onActivate
         if abs(terminal.font.pointSize - CGFloat(session.fontSize)) > 0.1 {
             terminal.font = NSFont.monospacedSystemFont(
@@ -173,6 +176,10 @@ struct TerminalPaneView: NSViewRepresentable {
             session?.id
         }
 
+        var terminationScope: TerminalProcessTerminationScope {
+            session?.terminationScope ?? .processOnly
+        }
+
         init(
             onTitleChange: @escaping (String) -> Void,
             onDirectoryChange: @escaping (String?) -> Void,
@@ -203,10 +210,12 @@ struct TerminalPaneView: NSViewRepresentable {
             reconnectTask?.cancel()
             reconnectTask = nil
             if reconnectAttempt > 0, !terminal.process.running {
-                terminal.terminate()
+                terminal.terminateSession(scope: session.terminationScope)
             }
 
-            onStateChange(reconnectAttempt == 0 ? .starting : .reconnecting)
+            resetShellParser()
+            terminal.prepareForProcessStart(trustPolicy: session.escapeSequenceTrustPolicy)
+            transition(to: reconnectAttempt == 0 ? .starting : .reconnecting)
             let launch = session.launchPlan
             terminal.startProcess(
                 executable: launch.executable,
@@ -216,13 +225,13 @@ struct TerminalPaneView: NSViewRepresentable {
             )
 
             if terminal.process.running {
-                onStateChange(.attached)
+                transition(to: .attached)
                 scheduleStabilityReset()
                 scheduleHealthMonitor()
             } else if session.supportsReconnect {
                 scheduleReconnect()
             } else {
-                onStateChange(.failed)
+                transition(to: .failed)
             }
         }
 
@@ -234,6 +243,7 @@ struct TerminalPaneView: NSViewRepresentable {
             reconnectTask = nil
             stabilityTask = nil
             healthTask = nil
+            terminal?.setProgrammaticInputEnabled(false)
         }
 
         func consumeHostData(_ bytes: ArraySlice<UInt8>) {
@@ -257,6 +267,8 @@ struct TerminalPaneView: NSViewRepresentable {
         func processTerminated(source: TerminalView, exitCode: Int32?) {
             stabilityTask?.cancel()
             stabilityTask = nil
+            terminal?.setProgrammaticInputEnabled(false)
+            terminal?.recoverTerminalModesAfterProcessExit()
             let childPID = (source as? ApexLocalProcessTerminalView)?.process.shellPid ?? 0
             scheduleChildReap(childPID)
 
@@ -271,7 +283,7 @@ struct TerminalPaneView: NSViewRepresentable {
             if session?.supportsReconnect == true {
                 scheduleReconnect()
             } else {
-                onStateChange(exitCode == nil ? .failed : .exited)
+                transition(to: exitCode == nil ? .failed : .exited)
             }
         }
 
@@ -281,11 +293,11 @@ struct TerminalPaneView: NSViewRepresentable {
             guard let delay = reconnectPolicy.delaySeconds(
                 forAttempt: reconnectAttempt
             ) else {
-                onStateChange(.failed)
+                transition(to: .failed)
                 return
             }
 
-            onStateChange(.reconnecting)
+            transition(to: .reconnecting)
             reconnectTask?.cancel()
             reconnectTask = Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .seconds(delay))
@@ -336,8 +348,19 @@ struct TerminalPaneView: NSViewRepresentable {
                     return
                 }
                 reconnectAttempt = 0
-                onStateChange(.attached)
+                transition(to: .attached)
             }
+        }
+
+        private func transition(to state: SessionState) {
+            terminal?.setProgrammaticInputEnabled(state == .attached)
+            onStateChange(state)
+        }
+
+        private func resetShellParser() {
+            parserLock.lock()
+            shellParser = ShellIntegrationParser()
+            parserLock.unlock()
         }
     }
 }
@@ -556,7 +579,9 @@ final class TerminalPaneRuntimeStore {
         container?.terminal.onCommandCaptured = nil
         container?.terminal.onCaptureStateChanged = nil
         container?.terminal.processDelegate = nil
-        container?.terminal.terminate()
+        container?.terminal.terminateSession(
+            scope: coordinator?.terminationScope ?? .processOnly
+        )
         container?.removeFromSuperview()
         record("shutdown:\(sessionID.uuidString)")
     }
@@ -1014,6 +1039,11 @@ final class ApexTerminalContainerView: NSView {
     }
 }
 
+enum TerminalProcessTerminationScope {
+    case processOnly
+    case processGroup
+}
+
 final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
     var onHostData: ((ArraySlice<UInt8>) -> Void)?
     var onCommandCaptured: ((CommandExecutionRecord) -> Void)?
@@ -1036,12 +1066,17 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
     private var focusTask: Task<Void, Never>?
     private var commandSessionID: UUID?
     private var streamParser = ShellIntegrationStreamParser()
+    private var trustFilter = TerminalEscapeSequenceTrustFilter(policy: .localDefault)
+    private var inlineImageFilter = TerminalInlineImageSafetyFilter(policy: .localDefault)
+    private var sixelFilter = TerminalSixelSafetyFilter()
+    private var programmaticInputEnabled = false
     private var capturedCommand = ""
     private var capturedOutput: [UInt8] = []
     private var commandStartedAt: Date?
     private var isCapturingOutput = false
     private var outputWasTruncated = false
     private static let maximumCapturedOutputBytes = 2 * 1_024 * 1_024
+    private static let maximumKittyImageCacheBytes = 64 * 1_024 * 1_024
 
     var currentCommandText: String {
         capturedCommand.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1099,16 +1134,100 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
             guard let request = notification.object as? TerminalInputRequest,
                   request.sessionID == sessionID else { return }
             Task { @MainActor [weak self] in
-                guard let self else { return }
-                requestFocusWhenReady()
-                var text = request.text
-                if request.execute && !text.hasSuffix("\n") {
-                    text += "\n"
-                }
-                insertText(
-                    text,
-                    replacementRange: NSRange(location: 0, length: 0)
-                )
+                _ = self?.handleProgrammaticInput(request)
+            }
+        }
+    }
+
+    @discardableResult
+    func handleProgrammaticInput(_ request: TerminalInputRequest) -> Bool {
+        guard programmaticInputEnabled, process.running else { return false }
+        requestFocusWhenReady()
+        var text = request.text
+        if request.execute && !text.hasSuffix("\n") {
+            text += "\n"
+        }
+        insertText(
+            text,
+            replacementRange: NSRange(location: 0, length: 0)
+        )
+        return true
+    }
+
+    func setProgrammaticInputEnabled(_ enabled: Bool) {
+        programmaticInputEnabled = enabled
+    }
+
+    func configureTrustPolicy(_ policy: TerminalEscapeSequenceTrustPolicy) {
+        guard trustFilter.policy != policy else { return }
+        trustFilter.updatePolicy(policy)
+    }
+
+    func configureInlineImageSafetyPolicy(_ policy: TerminalInlineImageSafetyPolicy) {
+        guard inlineImageFilter.policy != policy else { return }
+        inlineImageFilter.updatePolicy(policy)
+    }
+
+    func configureResourceBudget() {
+        terminal.options.kittyImageCacheLimitBytes = Self.maximumKittyImageCacheBytes
+        terminal.options.enableSixelReported = false
+    }
+
+    func prepareForProcessStart(trustPolicy: TerminalEscapeSequenceTrustPolicy) {
+        trustFilter.policy = trustPolicy
+        trustFilter.resetStreamState()
+        inlineImageFilter.resetStreamState()
+        sixelFilter.resetStreamState()
+        streamParser = ShellIntegrationStreamParser()
+        setProgrammaticInputEnabled(false)
+        resetCapture()
+    }
+
+    func terminateSession(scope: TerminalProcessTerminationScope) {
+        setProgrammaticInputEnabled(false)
+        cancelPendingFocusRequest()
+        trustFilter.resetStreamState()
+        inlineImageFilter.resetStreamState()
+        sixelFilter.resetStreamState()
+        streamParser = ShellIntegrationStreamParser()
+
+        if scope == .processGroup {
+            terminateLocalProcessGroupIfSafe()
+        }
+        terminate()
+    }
+
+    func recoverTerminalModesAfterProcessExit() {
+        trustFilter.resetStreamState()
+        inlineImageFilter.resetStreamState()
+        sixelFilter.resetStreamState()
+        streamParser = ShellIntegrationStreamParser()
+
+        // A dead process cannot legitimately own terminal modes anymore. Clear the
+        // active buffer's Kitty stack, leave the alternate screen, then clear the
+        // normal buffer's stack as well. Other input-affecting private modes are
+        // reset without using RIS, so scrollback remains available for diagnosis.
+        terminal.feed(text: "\u{001B}[<17u")
+        terminal.feed(text: "\u{001B}[?1000l\u{001B}[?1002l\u{001B}[?1003l\u{001B}[?1006l")
+        terminal.feed(text: "\u{001B}[?1004l\u{001B}[?2004l\u{001B}[?2026l")
+        terminal.feed(text: "\u{001B}[?1l\u{001B}>\u{001B}[?1049l\u{001B}[<17u\u{001B}[?25h")
+    }
+
+    private func terminateLocalProcessGroupIfSafe() {
+        let shellPID = process.shellPid
+        guard shellPID > 0 else { return }
+        let processGroup = Darwin.getpgid(shellPID)
+        guard processGroup > 0, processGroup != Darwin.getpgrp() else { return }
+
+        _ = Darwin.kill(-processGroup, SIGHUP)
+        Task.detached(priority: .utility) {
+            try? await Task.sleep(for: .milliseconds(200))
+            if Darwin.kill(-processGroup, 0) == 0 {
+                _ = Darwin.kill(-processGroup, SIGTERM)
+            }
+            try? await Task.sleep(for: .milliseconds(800))
+            if Darwin.kill(-processGroup, 0) == 0 {
+                _ = Darwin.kill(-processGroup, SIGKILL)
             }
         }
     }
@@ -1320,16 +1439,24 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
     }
 
     override func dataReceived(slice: ArraySlice<UInt8>) {
-        onHostData?(slice)
-        inspectInputProbe(slice)
-        inspectProgrammaticInputProbe(slice)
+        let clipboardFiltered = trustFilter.feed(slice)
+        guard !clipboardFiltered.isEmpty else { return }
+        let imageFiltered = inlineImageFilter.feed(clipboardFiltered[...])
+        guard !imageFiltered.isEmpty else { return }
+        let sixelFiltered = sixelFilter.feed(imageFiltered[...])
+        guard !sixelFiltered.isEmpty else { return }
+        let trustedSlice = sixelFiltered[...]
 
-        if streamParser.canBypass(slice) {
-            processTerminalData(slice)
+        onHostData?(trustedSlice)
+        inspectInputProbe(trustedSlice)
+        inspectProgrammaticInputProbe(trustedSlice)
+
+        if streamParser.canBypass(trustedSlice) {
+            processTerminalData(trustedSlice)
             return
         }
 
-        let segments = streamParser.feed(slice)
+        let segments = streamParser.feed(trustedSlice)
         for segment in segments {
             switch segment {
             case let .data(bytes):
@@ -1529,6 +1656,33 @@ struct TerminalSessionSnapshot: Equatable {
     let smartPasteProtectionEnabled: Bool
     let multilinePasteConfirmationEnabled: Bool
 
+    var escapeSequenceTrustPolicy: TerminalEscapeSequenceTrustPolicy {
+        switch kind {
+        case .local, .localTmux:
+            return .localDefault
+        case .ssh, .tmux:
+            return .remoteDefault
+        }
+    }
+
+    var inlineImageSafetyPolicy: TerminalInlineImageSafetyPolicy {
+        switch kind {
+        case .local, .localTmux:
+            return .localDefault
+        case .ssh, .tmux:
+            return .remoteDefault
+        }
+    }
+
+    var terminationScope: TerminalProcessTerminationScope {
+        switch kind {
+        case .local:
+            return .processGroup
+        case .localTmux, .ssh, .tmux:
+            return .processOnly
+        }
+    }
+
     var isRemote: Bool {
         switch kind {
         case .local, .localTmux:
@@ -1608,9 +1762,19 @@ struct TerminalSessionSnapshot: Equatable {
         )
     }
 
+    private static let localTmuxCapabilities: TmuxCapabilities = {
+        guard let executable = LocalToolDiscovery.firstExecutable(named: "tmux") else {
+            return .modernFallback
+        }
+        return TmuxRuntimeProbe.capabilities(executable: executable) ?? .modernFallback
+    }()
+
     private var tmuxConfigurationPath: String {
         let wrapperDirectory = ApexTermPaths.shellIntegrationDirectory()
-        guard (try? ShellIntegrationInstaller.prepare(at: wrapperDirectory)) != nil else {
+        guard (try? ShellIntegrationInstaller.prepare(
+            at: wrapperDirectory,
+            tmuxCapabilities: Self.localTmuxCapabilities
+        )) != nil else {
             return "/dev/null"
         }
         return ShellIntegrationInstaller.tmuxConfigurationURL(at: wrapperDirectory).path
