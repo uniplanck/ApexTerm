@@ -211,9 +211,13 @@ final class PTYRoundTripTests: XCTestCase {
             frame: CGRect(x: 0, y: 0, width: 640, height: 480)
         )
         let writeSequence = Array("\u{001B}]52;c;SGVsbG8=\u{0007}".utf8)
+        let c1WriteSequence = [UInt8(0x9D)]
+            + Array("00052;c;V29ybGQ=".utf8)
+            + [0x9C]
 
         terminal.configureTrustPolicy(.remoteDefault)
         terminal.dataReceived(slice: writeSequence[...])
+        terminal.dataReceived(slice: c1WriteSequence[...])
         XCTAssertEqual(pasteboard.string(forType: .string), "sentinel")
 
         terminal.configureTrustPolicy(.localDefault)
@@ -313,6 +317,32 @@ final class PTYRoundTripTests: XCTestCase {
     }
 
     @MainActor
+    func testRemoteKittyGraphicsIsRemovedBeforeHostObserversAndSwiftTerm() {
+        let terminal = ApexLocalProcessTerminalView(
+            frame: CGRect(x: 0, y: 0, width: 640, height: 480)
+        )
+        var observed: [UInt8] = []
+        terminal.onHostData = { bytes in
+            observed.append(contentsOf: bytes)
+        }
+        terminal.configureInlineImageSafetyPolicy(.remoteDefault)
+        let kitty = [UInt8(0x9F), 0x47]
+            + Array("a=T,f=100;SGVsbG8=".utf8)
+            + [0x9C]
+        let bytes = Array("before".utf8) + kitty + Array("after".utf8)
+
+        terminal.dataReceived(slice: bytes[...])
+
+        XCTAssertEqual(String(decoding: observed, as: UTF8.self), "beforeafter")
+        let buffer = String(
+            decoding: terminal.terminal.getBufferAsData(kind: .active),
+            as: UTF8.self
+        )
+        XCTAssertTrue(buffer.contains("beforeafter"))
+        XCTAssertFalse(buffer.contains("SGVsbG8="))
+    }
+
+    @MainActor
     func testResourceBudgetCapsKittyImageCachePerPane() {
         let terminal = ApexLocalProcessTerminalView(
             frame: CGRect(x: 0, y: 0, width: 640, height: 480)
@@ -367,43 +397,23 @@ final class PTYRoundTripTests: XCTestCase {
 
     @MainActor
     func testControlZForegroundResumeAndControlBackslash() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let startedURL = directory.appendingPathComponent("started")
+        let shellRegainedURL = directory.appendingPathComponent("shell-regained")
+        let continuedURL = directory.appendingPathComponent("continued")
+        let quitURL = directory.appendingPathComponent("quit")
+        let finishedURL = directory.appendingPathComponent("finished")
+
         let terminal = ApexLocalProcessTerminalView(
             frame: CGRect(x: 0, y: 0, width: 640, height: 480)
         )
-        let jobStarted = expectation(description: "foreground job started")
-        let shellRegainedControl = expectation(description: "shell regained terminal after Control-Z")
-        let jobContinued = expectation(description: "foreground job received SIGCONT")
-        let jobReceivedQuit = expectation(description: "foreground job received SIGQUIT")
-        let jobFinished = expectation(description: "shell continued after foreground job quit")
-        var output = ""
-        var didStart = false
-        var didRegain = false
-        var didContinue = false
-        var didReceiveQuit = false
-        var didFinish = false
-        terminal.onHostData = { bytes in
-            output += String(decoding: bytes, as: UTF8.self)
-            if output.contains("__JOB_STARTED__"), !didStart {
-                didStart = true
-                jobStarted.fulfill()
-            }
-            if output.contains("__SHELL_REGAINED__"), !didRegain {
-                didRegain = true
-                shellRegainedControl.fulfill()
-            }
-            if output.contains("__JOB_CONTINUED__"), !didContinue {
-                didContinue = true
-                jobContinued.fulfill()
-            }
-            if output.contains("__JOB_QUIT__"), !didReceiveQuit {
-                didReceiveQuit = true
-                jobReceivedQuit.fulfill()
-            }
-            if output.contains("__AFTER_QUIT__"), !didFinish {
-                didFinish = true
-                jobFinished.fulfill()
-            }
-        }
         terminal.startProcess(
             executable: "/bin/zsh",
             args: ["-df"],
@@ -415,61 +425,96 @@ final class PTYRoundTripTests: XCTestCase {
             }
         }
         Thread.sleep(forTimeInterval: 0.1)
+        terminal.send(
+            source: terminal,
+            data: Array("stty -echo\n".utf8)[...]
+        )
+        Thread.sleep(forTimeInterval: 0.1)
         let jobCommand =
-            "/bin/sh -c 'trap \"printf __JOB_CONTINUED__\\\\n\" CONT; "
-                + "trap \"printf __JOB_QUIT__\\\\n; exit 131\" QUIT; "
-                + "printf __JOB_STARTED__\\\\n; while :; do sleep 1; done'; "
-                + "printf '__AFTER_QUIT__\\n'\n"
+            "/bin/sh -c 'trap \"touch \(continuedURL.path)\" CONT; "
+                + "trap \"touch \(quitURL.path); exit 131\" QUIT; "
+                + "touch \(startedURL.path); while :; do sleep 1; done'; "
+                + "touch \(finishedURL.path)\n"
         terminal.send(
             source: terminal,
             data: Array(jobCommand.utf8)[...]
         )
-        wait(for: [jobStarted], timeout: 2)
+        XCTAssertTrue(waitUntil(timeout: 2) {
+            FileManager.default.fileExists(atPath: startedURL.path)
+        })
 
         terminal.keyDown(with: try controlKeyEvent(character: "z", keyCode: 6))
         Thread.sleep(forTimeInterval: 0.15)
         terminal.send(
             source: terminal,
-            data: Array("printf '__SHELL_REGAINED__\\n'\n".utf8)[...]
+            data: Array("touch \(shellRegainedURL.path)\n".utf8)[...]
         )
-        wait(for: [shellRegainedControl], timeout: 2)
+        XCTAssertTrue(waitUntil(timeout: 2) {
+            FileManager.default.fileExists(atPath: shellRegainedURL.path)
+        })
 
         terminal.send(source: terminal, data: Array("fg\n".utf8)[...])
-        wait(for: [jobContinued], timeout: 3)
+        XCTAssertTrue(waitUntil(timeout: 3) {
+            FileManager.default.fileExists(atPath: continuedURL.path)
+        })
         terminal.keyDown(with: try controlKeyEvent(character: "\\", keyCode: 42))
 
-        wait(for: [jobReceivedQuit, jobFinished], timeout: 5)
+        XCTAssertTrue(waitUntil(timeout: 5) {
+            FileManager.default.fileExists(atPath: quitURL.path)
+                && FileManager.default.fileExists(atPath: finishedURL.path)
+        })
         XCTAssertTrue(terminal.process.running)
     }
 
     @MainActor
-    func testLocalSessionShutdownTerminatesBackgroundProcessGroup() throws {
+    func testLocalSessionShutdownTerminatesSeparateJobProcessGroup() throws {
         let pidURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("apexterm-child-\(UUID().uuidString).pid")
         var childPID: pid_t = 0
+
+        let terminal = ApexLocalProcessTerminalView(
+            frame: CGRect(x: 0, y: 0, width: 640, height: 480)
+        )
         defer {
+            if terminal.process.running {
+                terminal.terminateSession(scope: .processGroup)
+            }
             if childPID > 0 {
                 _ = Darwin.kill(childPID, SIGKILL)
             }
             try? FileManager.default.removeItem(at: pidURL)
         }
-
-        let terminal = ApexLocalProcessTerminalView(
-            frame: CGRect(x: 0, y: 0, width: 640, height: 480)
-        )
-        let command = "trap '' HUP; sleep 30 & printf '%s' $! > '\(pidURL.path)'; wait"
         terminal.startProcess(
             executable: "/bin/zsh",
-            args: ["-lc", command],
+            args: ["-df"],
             environment: Terminal.getEnvironmentVariables(termName: "xterm-256color")
+        )
+        Thread.sleep(forTimeInterval: 0.1)
+        terminal.send(
+            source: terminal,
+            data: Array("stty -echo\n".utf8)[...]
+        )
+        Thread.sleep(forTimeInterval: 0.1)
+        let command =
+            "/bin/sh -c 'trap \"\" HUP; exec sleep 30' & child=$!; "
+                + "group=$(ps -o pgid= -p $child | tr -d ' '); "
+                + "printf '%s %s' $child $group > '\(pidURL.path)'; wait\n"
+        terminal.send(
+            source: terminal,
+            data: Array(command.utf8)[...]
         )
 
         XCTAssertTrue(waitUntil(timeout: 2) {
             FileManager.default.fileExists(atPath: pidURL.path)
         })
-        let text = try String(contentsOf: pidURL, encoding: .utf8)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        childPID = try XCTUnwrap(pid_t(text))
+        let values = try String(contentsOf: pidURL, encoding: .utf8)
+            .split(separator: " ")
+        XCTAssertEqual(values.count, 2)
+        childPID = try XCTUnwrap(pid_t(values[0]))
+        let childProcessGroup = try XCTUnwrap(pid_t(values[1]))
+        let shellProcessGroup = Darwin.getpgid(terminal.process.shellPid)
+        XCTAssertGreaterThan(childProcessGroup, 0)
+        XCTAssertNotEqual(childProcessGroup, shellProcessGroup)
         XCTAssertEqual(Darwin.kill(childPID, 0), 0)
 
         terminal.terminateSession(scope: .processGroup)

@@ -18,16 +18,10 @@ public struct TerminalEscapeSequenceTrustPolicy: Equatable, Sendable {
 }
 
 /// Removes denied OSC 52 clipboard access before bytes reach SwiftTerm.
-/// Allowed sequences are preserved byte-for-byte, including tmux passthrough.
+/// Allowed sequences are preserved byte-for-byte, including tmux passthrough,
+/// 8-bit C1 framing, and numeric commands with leading zeroes.
 public struct TerminalEscapeSequenceTrustFilter: Sendable {
-    private enum Envelope: Sendable { case raw, tmux }
     private enum ClipboardAction { case read, write, malformed }
-
-    private struct Start {
-        let index: Int
-        let payloadStart: Int
-        let envelope: Envelope
-    }
 
     private struct End {
         let payloadEnd: Int
@@ -35,18 +29,16 @@ public struct TerminalEscapeSequenceTrustFilter: Sendable {
     }
 
     private static let escape: UInt8 = 0x1B
-    private static let rawSignature: [UInt8] = [0x1B, 0x5D, 0x35, 0x32, 0x3B]
-    private static let tmuxSignature: [UInt8] = [
-        0x1B, 0x50, 0x74, 0x6D, 0x75, 0x78, 0x3B,
-        0x1B, 0x1B, 0x5D, 0x35, 0x32, 0x3B
-    ]
 
     public var policy: TerminalEscapeSequenceTrustPolicy
     public let maximumOSC52Bytes: Int
     public private(set) var blockedOSC52Count = 0
 
+    private let matcher = TerminalOSCSequenceMatcher(targetCode: 52)
     private var pending: [UInt8] = []
-    private var discarding: Envelope?
+    private var discarding: TerminalStringEnvelope?
+    private var discardingSearchIndex = 0
+    private var terminatorSearchIndex = 0
 
     public init(
         policy: TerminalEscapeSequenceTrustPolicy,
@@ -64,6 +56,8 @@ public struct TerminalEscapeSequenceTrustFilter: Sendable {
     public mutating func resetStreamState() {
         pending.removeAll(keepingCapacity: true)
         discarding = nil
+        discardingSearchIndex = 0
+        terminatorSearchIndex = 0
     }
 
     public mutating func feed(_ bytes: ArraySlice<UInt8>) -> [UInt8] {
@@ -72,119 +66,115 @@ public struct TerminalEscapeSequenceTrustFilter: Sendable {
 
         while !pending.isEmpty {
             if let envelope = discarding {
-                guard let end = terminator(from: 0, envelope: envelope) else {
-                    retainTerminatorPrefix()
+                guard let end = terminator(
+                    from: discardingSearchIndex,
+                    envelope: envelope
+                ) else {
+                    retainTerminatorPrefix(for: envelope)
+                    discardingSearchIndex = 0
                     return output
                 }
-                pending.removeFirst(end.nextIndex)
+                if end.nextIndex > 0 {
+                    pending.removeFirst(end.nextIndex)
+                }
                 discarding = nil
+                discardingSearchIndex = 0
                 continue
             }
 
-            guard let start = sequenceStart() else {
-                let retained = signaturePrefixLength()
-                let count = pending.count - retained
-                output.append(contentsOf: pending.prefix(count))
-                pending.removeFirst(count)
+            switch matcher.detect(in: pending) {
+            case .none:
+                terminatorSearchIndex = 0
+                emitOrdinaryBytesPreservingUTF8Boundary(into: &output)
                 return output
-            }
 
-            if start.index > 0 {
-                output.append(contentsOf: pending.prefix(start.index))
-                pending.removeFirst(start.index)
-                continue
-            }
-
-            guard let end = terminator(
-                from: start.payloadStart,
-                envelope: start.envelope
-            ) else {
-                if pending.count > maximumOSC52Bytes {
-                    blockedOSC52Count += 1
-                    discarding = start.envelope
-                } else {
-                    return output
+            case let .incomplete(candidate):
+                terminatorSearchIndex = 0
+                if candidate.index > 0 {
+                    output.append(contentsOf: pending.prefix(candidate.index))
+                    pending.removeFirst(candidate.index)
                 }
-                continue
-            }
+                if pending.count > maximumPendingCandidateBytes {
+                    blockedOSC52Count += 1
+                    discarding = candidate.envelope
+                    discardingSearchIndex = min(1, pending.count)
+                    continue
+                }
+                return output
 
-            let length = end.nextIndex
-            let action = clipboardAction(in: pending[start.payloadStart..<end.payloadEnd])
-            if length <= maximumOSC52Bytes, allows(action) {
-                output.append(contentsOf: pending.prefix(length))
-            } else {
-                blockedOSC52Count += 1
+            case let .target(start):
+                if start.index > 0 {
+                    output.append(contentsOf: pending.prefix(start.index))
+                    pending.removeFirst(start.index)
+                    continue
+                }
+
+                let searchStart = max(start.payloadStart, terminatorSearchIndex)
+                guard let end = terminator(
+                    from: searchStart,
+                    envelope: start.envelope
+                ) else {
+                    terminatorSearchIndex = nextTerminatorSearchIndex(
+                        envelope: start.envelope,
+                        minimum: start.payloadStart
+                    )
+                    if pending.count > maximumOSC52Bytes {
+                        blockedOSC52Count += 1
+                        discarding = start.envelope
+                        discardingSearchIndex = terminatorSearchIndex
+                        terminatorSearchIndex = 0
+                    } else {
+                        return output
+                    }
+                    continue
+                }
+
+                terminatorSearchIndex = 0
+                let length = end.nextIndex
+                let action = clipboardAction(
+                    in: pending[start.payloadStart..<end.payloadEnd]
+                )
+                if length <= maximumOSC52Bytes, allows(action) {
+                    output.append(contentsOf: pending.prefix(length))
+                } else {
+                    blockedOSC52Count += 1
+                }
+                pending.removeFirst(length)
             }
-            pending.removeFirst(length)
         }
         return output
     }
 
-    private func sequenceStart() -> Start? {
-        let raw = firstIndex(of: Self.rawSignature)
-        let tmux = firstIndex(of: Self.tmuxSignature)
-        if let tmux, tmux <= (raw ?? Int.max) {
-            return Start(
-                index: tmux,
-                payloadStart: tmux + Self.tmuxSignature.count,
-                envelope: .tmux
-            )
+    private var maximumPendingCandidateBytes: Int {
+        switch policy.clipboardAccess {
+        case .disabled:
+            return min(maximumOSC52Bytes, 1_024)
+        case .writeOnly, .readWrite:
+            return maximumOSC52Bytes
         }
-        if let raw {
-            return Start(
-                index: raw,
-                payloadStart: raw + Self.rawSignature.count,
-                envelope: .raw
-            )
-        }
-        return nil
     }
 
-    private func firstIndex(of signature: [UInt8]) -> Int? {
-        guard pending.count >= signature.count else { return nil }
-        for index in 0...(pending.count - signature.count) {
-            if pending[index..<(index + signature.count)].elementsEqual(signature) {
-                return index
-            }
-        }
-        return nil
-    }
-
-    private func signaturePrefixLength() -> Int {
-        let upper = min(
-            pending.count,
-            max(Self.rawSignature.count, Self.tmuxSignature.count) - 1
-        )
-        guard upper > 0 else { return 0 }
-        for length in stride(from: upper, through: 1, by: -1) {
-            let suffix = pending.suffix(length)
-            if length < Self.rawSignature.count,
-               suffix.elementsEqual(Self.rawSignature.prefix(length)) {
-                return length
-            }
-            if length < Self.tmuxSignature.count,
-               suffix.elementsEqual(Self.tmuxSignature.prefix(length)) {
-                return length
-            }
-        }
-        return 0
-    }
-
-    private func terminator(from start: Int, envelope: Envelope) -> End? {
+    private func terminator(
+        from start: Int,
+        envelope: TerminalStringEnvelope
+    ) -> End? {
         switch envelope {
         case .raw:
             var index = start
             while index < pending.count {
-                if pending[index] == 0x07 {
+                if pending[index] == 0x07 || pending[index] == 0x9C {
                     return End(payloadEnd: index, nextIndex: index + 1)
                 }
-                if pending[index] == Self.escape,
-                   index + 1 < pending.count,
-                   pending[index + 1] == 0x5C {
-                    return End(payloadEnd: index, nextIndex: index + 2)
+                if pending[index] == Self.escape {
+                    guard index + 1 < pending.count else { return nil }
+                    if pending[index + 1] == 0x5C {
+                        return End(payloadEnd: index, nextIndex: index + 2)
+                    }
+                    return End(payloadEnd: index, nextIndex: index)
                 }
                 index += 1
             }
+
         case .tmux:
             var index = start
             while index + 1 < pending.count {
@@ -197,6 +187,19 @@ public struct TerminalEscapeSequenceTrustFilter: Sendable {
             }
         }
         return nil
+    }
+
+    private func nextTerminatorSearchIndex(
+        envelope: TerminalStringEnvelope,
+        minimum: Int
+    ) -> Int {
+        switch envelope {
+        case .raw:
+            let retained = pending.last == Self.escape ? 1 : 0
+            return max(minimum, pending.count - retained)
+        case .tmux:
+            return max(minimum, pending.count - min(2, pending.count))
+        }
     }
 
     private func clipboardAction(in payload: ArraySlice<UInt8>) -> ClipboardAction {
@@ -217,7 +220,25 @@ public struct TerminalEscapeSequenceTrustFilter: Sendable {
         }
     }
 
-    private mutating func retainTerminatorPrefix() {
-        pending = pending.last == Self.escape ? [Self.escape] : []
+    private mutating func emitOrdinaryBytesPreservingUTF8Boundary(
+        into output: inout [UInt8]
+    ) {
+        let retained = TerminalByteEncoding.trailingIncompleteSequenceLength(
+            in: pending
+        )
+        let count = pending.count - retained
+        output.append(contentsOf: pending.prefix(count))
+        pending.removeFirst(count)
+    }
+
+    private mutating func retainTerminatorPrefix(
+        for envelope: TerminalStringEnvelope
+    ) {
+        let maximumEscapes = envelope == .tmux ? 2 : 1
+        let trailingEscapes = pending.reversed()
+            .prefix(while: { $0 == Self.escape })
+            .prefix(maximumEscapes)
+            .count
+        pending = Array(repeating: Self.escape, count: trailingEscapes)
     }
 }

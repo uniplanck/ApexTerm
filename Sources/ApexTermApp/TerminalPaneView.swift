@@ -1068,6 +1068,7 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
     private var streamParser = ShellIntegrationStreamParser()
     private var trustFilter = TerminalEscapeSequenceTrustFilter(policy: .localDefault)
     private var inlineImageFilter = TerminalInlineImageSafetyFilter(policy: .localDefault)
+    private var kittyGraphicsFilter = TerminalKittyGraphicsSafetyFilter(policy: .localDefault)
     private var sixelFilter = TerminalSixelSafetyFilter()
     private var programmaticInputEnabled = false
     private var capturedCommand = ""
@@ -1164,8 +1165,12 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
     }
 
     func configureInlineImageSafetyPolicy(_ policy: TerminalInlineImageSafetyPolicy) {
-        guard inlineImageFilter.policy != policy else { return }
+        guard inlineImageFilter.policy != policy
+                || kittyGraphicsFilter.policy != policy else {
+            return
+        }
         inlineImageFilter.updatePolicy(policy)
+        kittyGraphicsFilter.updatePolicy(policy)
     }
 
     func configureResourceBudget() {
@@ -1177,6 +1182,7 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
         trustFilter.policy = trustPolicy
         trustFilter.resetStreamState()
         inlineImageFilter.resetStreamState()
+        kittyGraphicsFilter.resetStreamState()
         sixelFilter.resetStreamState()
         streamParser = ShellIntegrationStreamParser()
         setProgrammaticInputEnabled(false)
@@ -1188,11 +1194,12 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
         cancelPendingFocusRequest()
         trustFilter.resetStreamState()
         inlineImageFilter.resetStreamState()
+        kittyGraphicsFilter.resetStreamState()
         sixelFilter.resetStreamState()
         streamParser = ShellIntegrationStreamParser()
 
         if scope == .processGroup {
-            terminateLocalProcessGroupIfSafe()
+            terminateLocalProcessSessionIfSafe()
         }
         terminate()
     }
@@ -1200,6 +1207,7 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
     func recoverTerminalModesAfterProcessExit() {
         trustFilter.resetStreamState()
         inlineImageFilter.resetStreamState()
+        kittyGraphicsFilter.resetStreamState()
         sixelFilter.resetStreamState()
         streamParser = ShellIntegrationStreamParser()
 
@@ -1213,22 +1221,19 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
         terminal.feed(text: "\u{001B}[?1l\u{001B}>\u{001B}[?1049l\u{001B}[<17u\u{001B}[?25h")
     }
 
-    private func terminateLocalProcessGroupIfSafe() {
-        let shellPID = process.shellPid
-        guard shellPID > 0 else { return }
-        let processGroup = Darwin.getpgid(shellPID)
-        guard processGroup > 0, processGroup != Darwin.getpgrp() else { return }
+    private func terminateLocalProcessSessionIfSafe() {
+        guard let processSession = LocalTerminalProcessSession(
+            rootPID: process.shellPid
+        ) else {
+            return
+        }
 
-        _ = Darwin.kill(-processGroup, SIGHUP)
+        processSession.signalAllProcessGroups(SIGHUP)
         Task.detached(priority: .utility) {
             try? await Task.sleep(for: .milliseconds(200))
-            if Darwin.kill(-processGroup, 0) == 0 {
-                _ = Darwin.kill(-processGroup, SIGTERM)
-            }
+            processSession.signalAllProcessGroups(SIGTERM)
             try? await Task.sleep(for: .milliseconds(800))
-            if Darwin.kill(-processGroup, 0) == 0 {
-                _ = Darwin.kill(-processGroup, SIGKILL)
-            }
+            processSession.signalAllProcessGroups(SIGKILL)
         }
     }
 
@@ -1443,7 +1448,9 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
         guard !clipboardFiltered.isEmpty else { return }
         let imageFiltered = inlineImageFilter.feed(clipboardFiltered[...])
         guard !imageFiltered.isEmpty else { return }
-        let sixelFiltered = sixelFilter.feed(imageFiltered[...])
+        let kittyFiltered = kittyGraphicsFilter.feed(imageFiltered[...])
+        guard !kittyFiltered.isEmpty else { return }
+        let sixelFiltered = sixelFilter.feed(kittyFiltered[...])
         guard !sixelFiltered.isEmpty else { return }
         let trustedSlice = sixelFiltered[...]
 

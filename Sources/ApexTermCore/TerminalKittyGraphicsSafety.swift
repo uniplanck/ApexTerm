@@ -1,39 +1,55 @@
 import Foundation
 
-public enum TerminalInlineImageAccess: Equatable, Sendable {
-    case disabled
-    case bounded(maximumSequenceBytes: Int)
-}
-
-public struct TerminalInlineImageSafetyPolicy: Equatable, Sendable {
-    public var access: TerminalInlineImageAccess
-
-    public init(access: TerminalInlineImageAccess) {
-        self.access = access
+/// Bounds Kitty graphics APC sequences before SwiftTerm accumulates and decodes
+/// their payload. It shares the inline-image policy used for iTerm2 images:
+/// bounded locally and disabled for remote sessions by default.
+public struct TerminalKittyGraphicsSafetyFilter: Sendable {
+    private struct Introducer: Sendable {
+        let bytes: [UInt8]
+        let envelope: TerminalStringEnvelope
     }
 
-    public static let localDefault = Self(
-        access: .bounded(maximumSequenceBytes: 8 * 1_024 * 1_024)
-    )
-    public static let remoteDefault = Self(access: .disabled)
-}
+    private struct Start: Sendable {
+        let index: Int
+        let payloadStart: Int
+        let envelope: TerminalStringEnvelope
+    }
 
-/// Bounds iTerm2 OSC 1337 inline-image sequences before SwiftTerm decodes Base64.
-/// The matcher mirrors SwiftTerm's support for C1 OSC and leading-zero command IDs.
-public struct TerminalInlineImageSafetyFilter: Sendable {
+    private enum Detection: Sendable {
+        case target(Start)
+        case incomplete(index: Int)
+        case none
+    }
+
     private struct End {
         let nextIndex: Int
     }
 
     private static let escape: UInt8 = 0x1B
+    private static let introducers: [Introducer] = [
+        Introducer(
+            bytes: [0x90] + Array("tmux;\u{001B}\u{001B}_G".utf8),
+            envelope: .tmux
+        ),
+        Introducer(
+            bytes: [0x90] + Array("tmux;".utf8) + [0x9F, 0x47],
+            envelope: .tmux
+        ),
+        Introducer(
+            bytes: Array("\u{001B}Ptmux;\u{001B}\u{001B}_G".utf8),
+            envelope: .tmux
+        ),
+        Introducer(
+            bytes: Array("\u{001B}Ptmux;".utf8) + [0x9F, 0x47],
+            envelope: .tmux
+        ),
+        Introducer(bytes: [0x1B, 0x5F, 0x47], envelope: .raw),
+        Introducer(bytes: [0x9F, 0x47], envelope: .raw)
+    ]
 
     public var policy: TerminalInlineImageSafetyPolicy
-    public private(set) var blockedInlineImageCount = 0
+    public private(set) var blockedKittyGraphicsCount = 0
 
-    private let matcher = TerminalOSCSequenceMatcher(
-        targetCode: 1337,
-        requiredPayloadPrefix: Array("File=".utf8)
-    )
     private var pending: [UInt8] = []
     private var discarding: TerminalStringEnvelope?
     private var discardingSearchIndex = 0
@@ -77,23 +93,17 @@ public struct TerminalInlineImageSafetyFilter: Sendable {
                 continue
             }
 
-            switch matcher.detect(in: pending) {
+            switch detectStart() {
             case .none:
                 terminatorSearchIndex = 0
                 emitOrdinaryBytesPreservingUTF8Boundary(into: &output)
                 return output
 
-            case let .incomplete(candidate):
+            case let .incomplete(index):
                 terminatorSearchIndex = 0
-                if candidate.index > 0 {
-                    output.append(contentsOf: pending.prefix(candidate.index))
-                    pending.removeFirst(candidate.index)
-                }
-                if pending.count > maximumAllowedBytes {
-                    blockedInlineImageCount += 1
-                    discarding = candidate.envelope
-                    discardingSearchIndex = min(1, pending.count)
-                    continue
+                if index > 0 {
+                    output.append(contentsOf: pending.prefix(index))
+                    pending.removeFirst(index)
                 }
                 return output
 
@@ -114,7 +124,7 @@ public struct TerminalInlineImageSafetyFilter: Sendable {
                         minimum: start.payloadStart
                     )
                     if pending.count > maximumAllowedBytes {
-                        blockedInlineImageCount += 1
+                        blockedKittyGraphicsCount += 1
                         discarding = start.envelope
                         discardingSearchIndex = terminatorSearchIndex
                         terminatorSearchIndex = 0
@@ -128,7 +138,7 @@ public struct TerminalInlineImageSafetyFilter: Sendable {
                 if allows(sequenceBytes: end.nextIndex) {
                     output.append(contentsOf: pending.prefix(end.nextIndex))
                 } else {
-                    blockedInlineImageCount += 1
+                    blockedKittyGraphicsCount += 1
                 }
                 pending.removeFirst(end.nextIndex)
             }
@@ -154,6 +164,44 @@ public struct TerminalInlineImageSafetyFilter: Sendable {
         }
     }
 
+    private func detectStart() -> Detection {
+        var earliestIncomplete: Int?
+
+        for index in pending.indices {
+            for introducer in Self.introducers {
+                if introducer.bytes.first.map({ $0 >= 0x80 }) == true,
+                   TerminalByteEncoding.isPartOfValidUTF8Sequence(
+                        at: index,
+                        in: pending
+                   ) {
+                    continue
+                }
+                let available = pending.count - index
+                let compared = min(available, introducer.bytes.count)
+                guard pending[index..<(index + compared)]
+                    .elementsEqual(introducer.bytes.prefix(compared)) else {
+                    continue
+                }
+                guard available >= introducer.bytes.count else {
+                    earliestIncomplete = min(earliestIncomplete ?? index, index)
+                    continue
+                }
+                return .target(
+                    Start(
+                        index: index,
+                        payloadStart: index + introducer.bytes.count,
+                        envelope: introducer.envelope
+                    )
+                )
+            }
+        }
+
+        if let earliestIncomplete {
+            return .incomplete(index: earliestIncomplete)
+        }
+        return .none
+    }
+
     private func terminator(
         from start: Int,
         envelope: TerminalStringEnvelope
@@ -162,7 +210,7 @@ public struct TerminalInlineImageSafetyFilter: Sendable {
         case .raw:
             var index = start
             while index < pending.count {
-                if pending[index] == 0x07 || pending[index] == 0x9C {
+                if pending[index] == 0x9C {
                     return End(nextIndex: index + 1)
                 }
                 if pending[index] == Self.escape {
