@@ -113,6 +113,8 @@ struct WorkspaceTabBarView: View {
                     }
                 )
                 .frame(width: 32, height: 32)
+
+                remoteHostLaunchMenu
             }
 
             if model.isUIControlVisible(.tmuxManager) {
@@ -348,6 +350,40 @@ struct WorkspaceTabBarView: View {
             .accessibilityLabel("Tab separator")
             .accessibilityIdentifier("tab-separator-\(item.id)")
             .allowsHitTesting(false)
+    }
+
+    private var remoteHostLaunchMenu: some View {
+        Menu {
+            if model.sshProfiles.isEmpty {
+                Button("Remote Host Settings…") {
+                    model.isRemoteHostSettingsPresented = true
+                }
+            } else {
+                Section("Open Remote Host") {
+                    ForEach(model.sshProfiles) { profile in
+                        Button {
+                            model.createRemoteWorkspace(profile: profile)
+                        } label: {
+                            Label(profile.displayTitle, systemImage: "network")
+                        }
+                    }
+                }
+
+                Divider()
+
+                Button("Remote Host Settings…") {
+                    model.isRemoteHostSettingsPresented = true
+                }
+            }
+        } label: {
+            Image(systemName: "network")
+                .frame(width: 30, height: 32)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help(model.sshProfiles.isEmpty ? "Configure Remote Hosts" : "Open Remote Host")
+        .accessibilityLabel("Open Remote Host")
     }
 
     private func workspaceTab(

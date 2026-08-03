@@ -56,6 +56,14 @@ struct CommandHistoryPanel: View {
     }
 }
 
+private struct TerminalCommandTranscriptContentHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 struct TerminalCommandTranscript: View {
     let records: [CommandExecutionRecord]
     let appearance: TerminalAppearance
@@ -63,6 +71,7 @@ struct TerminalCommandTranscript: View {
     let collapsedCommandIDs: Set<UUID>
     let onToggleCollapsed: (UUID) -> Void
     let onInsertCommand: (String) -> Void
+    let onContentHeightChange: (CGFloat) -> Void
 
     var body: some View {
         ScrollViewReader { reader in
@@ -83,8 +92,20 @@ struct TerminalCommandTranscript: View {
                 .padding(.leading, 5)
                 .padding(.trailing, 10)
                 .padding(.vertical, 8)
+                .background {
+                    GeometryReader { proxy in
+                        Color.clear.preference(
+                            key: TerminalCommandTranscriptContentHeightKey.self,
+                            value: proxy.size.height
+                        )
+                    }
+                }
             }
             .background(terminalBackground)
+            .onPreferenceChange(TerminalCommandTranscriptContentHeightKey.self) { height in
+                guard height > 0 else { return }
+                onContentHeightChange(height)
+            }
             .onAppear {
                 if let latestID = records.first?.id {
                     reader.scrollTo(latestID, anchor: .top)

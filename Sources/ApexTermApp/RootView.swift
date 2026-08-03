@@ -34,7 +34,6 @@ struct RootView: View {
     @State private var isRenameWorkspacePresented = false
     @State private var isRenameSessionPresented = false
     @State private var isNamedTmuxPresented = false
-    @State private var isMainWindowExpanded = false
     @State private var expandedWorkspaceIDs: Set<UUID> = []
     @State private var expandedRemoteHostAliases: Set<String> = []
 
@@ -134,6 +133,16 @@ struct RootView: View {
         .onChange(of: model.isCompactMode) { _, _ in
             syncCompactTitlebar(on: mainWindow)
         }
+        .onAppear {
+            if let selectedWorkspaceID = model.selectedWorkspaceID {
+                expandedWorkspaceIDs.insert(selectedWorkspaceID)
+            }
+        }
+        .onChange(of: model.selectedWorkspaceID) { _, selectedWorkspaceID in
+            if let selectedWorkspaceID {
+                expandedWorkspaceIDs.insert(selectedWorkspaceID)
+            }
+        }
         .sheet(isPresented: $model.isCommandPalettePresented) {
             CommandPaletteView(model: model)
         }
@@ -173,8 +182,8 @@ struct RootView: View {
                 }
             }
         }
-        .alert("Rename Terminal", isPresented: $isRenameSessionPresented) {
-            TextField("Terminal name", text: $renameDraft)
+        .alert("Rename Pane", isPresented: $isRenameSessionPresented) {
+            TextField("Pane name", text: $renameDraft)
             Button("Cancel", role: .cancel) {}
             Button("Rename") {
                 if let renameSessionID {
@@ -315,13 +324,34 @@ struct RootView: View {
                 }
 
                 if model.isUIControlVisible(.sidebarNewWorkspace) {
-                    Button {
-                        model.createWorkspace()
+                    Menu {
+                        Button("New Local Shell") {
+                            model.createWorkspace()
+                        }
+
+                        if !model.sshProfiles.isEmpty {
+                            Divider()
+                            Section("Remote Hosts") {
+                                ForEach(model.sshProfiles) { profile in
+                                    Button(profile.displayTitle) {
+                                        model.createRemoteWorkspace(profile: profile)
+                                    }
+                                }
+                            }
+                        }
+
+                        Divider()
+                        Button("Remote Host Settings…") {
+                            model.isRemoteHostSettingsPresented = true
+                        }
                     } label: {
                         Image(systemName: "plus")
                     }
-                    .buttonStyle(.plain)
-                    .help("New Workspace")
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .help("New Local or Remote Terminal")
+                    .accessibilityLabel("New Local or Remote Terminal")
                 }
             }
             .padding(.horizontal, 10)
@@ -331,25 +361,8 @@ struct RootView: View {
 
             List {
                 Section("Terminal Windows") {
-                    DisclosureGroup(isExpanded: $isMainWindowExpanded) {
-                        ForEach(model.workspaces) { workspace in
-                            workspaceSidebarItem(workspace)
-                                .padding(.leading, 8)
-                        }
-                    } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: "macwindow")
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(model.mainWindowName)
-                                    .lineLimit(1)
-                                Text("\(model.workspaces.count) tab\(model.workspaces.count == 1 ? "" : "s")")
-                                    .font(.system(size: max(8, model.sidebarFontSize - 2)))
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                    .contextMenu {
-                        mainWindowContextMenu()
+                    ForEach(model.workspaces) { workspace in
+                        workspaceSidebarItem(workspace)
                     }
                 }
 
@@ -419,6 +432,17 @@ struct RootView: View {
                                             .foregroundStyle(.secondary)
                                             .lineLimit(1)
                                     }
+                                    Spacer(minLength: 4)
+                                    Button {
+                                        model.createRemoteWorkspace(profile: profile)
+                                    } label: {
+                                        Image(systemName: "play.fill")
+                                            .font(.caption2)
+                                            .frame(width: 22, height: 22)
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .help("Open SSH tab")
+                                    .accessibilityLabel("Open \(profile.displayTitle) over SSH")
                                 }
                             }
                             .contextMenu {
@@ -485,6 +509,7 @@ struct RootView: View {
                             beginRenameSession(session)
                         }
                     )
+                    .help("Select Pane. Double-click or right-click to rename.")
                     .contextMenu {
                         sessionContextMenu(session)
                     }
@@ -3319,7 +3344,7 @@ struct RootView: View {
         Button("Focus Terminal") {
             model.selectSession(session.id)
         }
-        Button("Rename Terminal…") {
+        Button("Rename Pane…") {
             beginRenameSession(session)
         }
         Divider()
@@ -3329,7 +3354,7 @@ struct RootView: View {
         Button("Split Down") {
             model.splitSession(id: session.id, axis: .horizontal)
         }
-        Button("Close Terminal Group") {
+        Button("Close Pane") {
             model.closeSession(id: session.id)
         }
         if case .localTmux = session.kind {

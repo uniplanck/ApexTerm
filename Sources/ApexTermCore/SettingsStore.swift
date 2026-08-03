@@ -44,7 +44,8 @@ public actor ApexSettingsStore {
                 profiles: decoded.profiles,
                 keybindings: decoded.keybindings,
                 general: decoded.general,
-                uiControls: decoded.uiControls
+                uiControls: decoded.uiControls,
+                commandPresets: decoded.commandPresets
             )
         } catch let error as ApexSettingsStoreError {
             throw error

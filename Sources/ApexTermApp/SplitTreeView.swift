@@ -64,6 +64,7 @@ struct SplitTreeView: View {
     @State private var renameDraft = ""
     @State private var livePaneHeights: [UUID: Double] = [:]
     @State private var livePanePreviewHeights: [UUID: Double] = [:]
+    @State private var transcriptContentHeights: [UUID: Double] = [:]
 
     static func showsSelectionOutline(
         isSelected: Bool,
@@ -82,7 +83,7 @@ struct SplitTreeView: View {
             }
         }
         .alert(
-            "Rename Terminal",
+            "Rename Pane",
             isPresented: Binding(
                 get: { renameSessionID != nil },
                 set: { presented in
@@ -90,7 +91,7 @@ struct SplitTreeView: View {
                 }
             )
         ) {
-            TextField("Terminal name", text: $renameDraft)
+            TextField("Pane name", text: $renameDraft)
             Button("Cancel", role: .cancel) {}
             Button("Rename") {
                 if let renameSessionID {
@@ -125,14 +126,21 @@ struct SplitTreeView: View {
                 let previewLivePaneHeight = livePanePreviewHeights[session.id].map { height in
                     min(max(CGFloat(height), minimumLivePaneHeight), maximumLivePaneHeight)
                 }
-                let effectiveLivePaneHeight = previewLivePaneHeight ?? resolvedLivePaneHeight
+                let manualLivePaneHeight = previewLivePaneHeight ?? resolvedLivePaneHeight
                 let paneHeaderTopInset: CGFloat = model.isCompactMode ? 5 : 0
-                let transcriptChromeHeight: CGFloat = (showsTranscript ? 38 : 26)
-                    + paneHeaderTopInset
-                let resolvedTranscriptHeight = max(
-                    0,
-                    proxy.size.height - transcriptChromeHeight - effectiveLivePaneHeight
+                let transcriptLayout = CommandTranscriptLayoutPolicy.resolve(
+                    mode: transcriptMode,
+                    showsTranscript: showsTranscript,
+                    containerHeight: Double(proxy.size.height),
+                    measuredContentHeight: transcriptContentHeights[session.id] ?? 86,
+                    preferredLivePaneHeight: Double(manualLivePaneHeight),
+                    minimumLivePaneHeight: Double(minimumLivePaneHeight),
+                    maximumLivePaneHeight: Double(maximumLivePaneHeight),
+                    headerHeight: Double(26 + paneHeaderTopInset),
+                    resizeHandleHeight: 12
                 )
+                let resolvedTranscriptHeight = CGFloat(transcriptLayout.transcriptHeight)
+                let effectiveLivePaneHeight = CGFloat(transcriptLayout.livePaneHeight)
 
                 ZStack {
                     VStack(spacing: 0) {
@@ -153,6 +161,8 @@ struct SplitTreeView: View {
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)
                                     .fixedSize(horizontal: true, vertical: false)
+
+                                commandPresetMenu(sessionID: session.id)
 
                                 CommandTranscriptModeCycleButton(
                                     mode: $model.commandTranscriptMode
@@ -201,6 +211,19 @@ struct SplitTreeView: View {
                                         command,
                                         sessionID: session.id
                                     )
+                                },
+                                onContentHeightChange: { height in
+                                    let value = Double(height)
+                                    guard abs((transcriptContentHeights[session.id] ?? 0) - value) > 0.5 else {
+                                        return
+                                    }
+                                    if transcriptMode == .ex {
+                                        withAnimation(.easeOut(duration: 0.18)) {
+                                            transcriptContentHeights[session.id] = value
+                                        }
+                                    } else {
+                                        transcriptContentHeights[session.id] = value
+                                    }
                                 }
                             )
                             .frame(height: resolvedTranscriptHeight)
@@ -210,38 +233,40 @@ struct SplitTreeView: View {
                                 }
                             )
 
-                            TerminalLivePaneResizeHandle(
-                                sessionID: session.id,
-                                currentHeight: effectiveLivePaneHeight,
-                                minimumHeight: minimumLivePaneHeight,
-                                maximumHeight: maximumLivePaneHeight,
-                                onResizeChanged: { height in
-                                    let value = Double(height)
-                                    if let previous = livePanePreviewHeights[session.id],
-                                       abs(previous - value) < 0.75 {
-                                        return
+                            if transcriptLayout.showsResizeHandle {
+                                TerminalLivePaneResizeHandle(
+                                    sessionID: session.id,
+                                    currentHeight: effectiveLivePaneHeight,
+                                    minimumHeight: minimumLivePaneHeight,
+                                    maximumHeight: maximumLivePaneHeight,
+                                    onResizeChanged: { height in
+                                        let value = Double(height)
+                                        if let previous = livePanePreviewHeights[session.id],
+                                           abs(previous - value) < 0.75 {
+                                            return
+                                        }
+                                        var transaction = Transaction()
+                                        transaction.disablesAnimations = true
+                                        withTransaction(transaction) {
+                                            livePanePreviewHeights[session.id] = value
+                                        }
+                                    },
+                                    onResizeEnded: { height in
+                                        let value = Double(height)
+                                        var transaction = Transaction()
+                                        transaction.disablesAnimations = true
+                                        withTransaction(transaction) {
+                                            livePaneHeights[session.id] = value
+                                            livePanePreviewHeights.removeValue(forKey: session.id)
+                                        }
+                                        UserDefaults.standard.set(
+                                            value,
+                                            forKey: livePaneHeightKey(for: session.id)
+                                        )
                                     }
-                                    var transaction = Transaction()
-                                    transaction.disablesAnimations = true
-                                    withTransaction(transaction) {
-                                        livePanePreviewHeights[session.id] = value
-                                    }
-                                },
-                                onResizeEnded: { height in
-                                    let value = Double(height)
-                                    var transaction = Transaction()
-                                    transaction.disablesAnimations = true
-                                    withTransaction(transaction) {
-                                        livePaneHeights[session.id] = value
-                                        livePanePreviewHeights.removeValue(forKey: session.id)
-                                    }
-                                    UserDefaults.standard.set(
-                                        value,
-                                        forKey: livePaneHeightKey(for: session.id)
-                                    )
-                                }
-                            )
-                            .frame(height: 12)
+                                )
+                                .frame(height: 12)
+                            }
                         }
 
                         TerminalPaneView(
@@ -359,6 +384,42 @@ struct SplitTreeView: View {
                 description: Text("The workspace references an unavailable session.")
             )
         }
+    }
+
+    private func commandPresetMenu(sessionID: UUID) -> some View {
+        Menu {
+            if model.commandPresets.isEmpty {
+                Button("定型コマンドを設定…") {
+                    model.settingsTab = .commands
+                    model.isSettingsPresented = true
+                }
+            } else {
+                ForEach(model.commandPresets) { preset in
+                    Button {
+                        model.executeCommandPreset(preset, sessionID: sessionID)
+                    } label: {
+                        Text(preset.name)
+                    }
+                    .help(preset.command)
+                }
+
+                Divider()
+
+                Button("定型コマンドを管理…") {
+                    model.settingsTab = .commands
+                    model.isSettingsPresented = true
+                }
+            }
+        } label: {
+            Image(systemName: "bolt.fill")
+                .font(.caption)
+                .frame(width: 20, height: 20)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("定型コマンドを送信")
+        .accessibilityLabel("定型コマンドを送信")
     }
 
     @ViewBuilder

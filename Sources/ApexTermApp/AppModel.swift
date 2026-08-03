@@ -54,6 +54,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var isTmuxActionRunning = false
     @Published private(set) var tmuxActionMessage: String?
     @Published var isSettingsPresented = false
+    @Published var settingsTab: AppSettingsTab = .general
     @Published var terminalTitle = "Local Shell"
     @Published var currentDirectory: String?
     @Published var isAgentRailVisible = true
@@ -72,6 +73,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var commandStatusBySession: [UUID: String] = [:]
     @Published private(set) var commandHistory: [CommandExecutionRecord] = []
     @Published private(set) var collapsedCommandIDs: Set<UUID> = []
+    @Published private(set) var commandPresets: [TerminalCommandPreset] = []
     @Published var isCommandHistoryVisible = true {
         didSet {
             UserDefaults.standard.set(
@@ -743,6 +745,7 @@ final class AppModel: ObservableObject {
         autoCollapseLargeOutputsEnabled = document.general.autoCollapseLargeOutputs
         autoCollapseLargeOutputLineThreshold = document.general.autoCollapseLineThreshold
         uiControlCustomization = document.uiControls
+        commandPresets = document.commandPresets
     }
 
     private func synchronizeSettingsDocument() {
@@ -784,6 +787,7 @@ final class AppModel: ObservableObject {
             2_000
         )
         document.uiControls = uiControlCustomization
+        document.commandPresets = commandPresets
 
         guard document != settingsDocument else { return }
         settingsDocument = document
@@ -2528,6 +2532,54 @@ final class AppModel: ObservableObject {
                 text: text,
                 execute: execute
             )
+        )
+    }
+
+    func saveCommandPreset(
+        id: UUID? = nil,
+        name: String,
+        command: String
+    ) {
+        let preset = TerminalCommandPreset(
+            id: id ?? UUID(),
+            name: name,
+            command: command
+        )
+        guard preset.isValid else { return }
+
+        if let index = commandPresets.firstIndex(where: { $0.id == preset.id }) {
+            commandPresets[index] = preset
+        } else {
+            commandPresets.append(preset)
+        }
+        synchronizeSettingsDocument()
+    }
+
+    func deleteCommandPreset(id: UUID) {
+        commandPresets.removeAll { $0.id == id }
+        synchronizeSettingsDocument()
+    }
+
+    func moveCommandPreset(id: UUID, offset: Int) {
+        guard offset != 0,
+              let source = commandPresets.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+        let destination = min(max(source + offset, 0), commandPresets.count - 1)
+        guard destination != source else { return }
+        let preset = commandPresets.remove(at: source)
+        commandPresets.insert(preset, at: destination)
+        synchronizeSettingsDocument()
+    }
+
+    func executeCommandPreset(
+        _ preset: TerminalCommandPreset,
+        sessionID: UUID? = nil
+    ) {
+        requestTerminalInput(
+            preset.command,
+            execute: true,
+            sessionID: sessionID
         )
     }
 

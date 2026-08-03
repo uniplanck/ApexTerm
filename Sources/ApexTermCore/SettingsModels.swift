@@ -135,6 +135,26 @@ public enum ApexInterfaceAppearance: String, Codable, CaseIterable, Identifiable
     }
 }
 
+public struct TerminalCommandPreset: Codable, Equatable, Identifiable, Sendable {
+    public var id: UUID
+    public var name: String
+    public var command: String
+
+    public init(
+        id: UUID = UUID(),
+        name: String,
+        command: String
+    ) {
+        self.id = id
+        self.name = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))
+        self.command = String(command.trimmingCharacters(in: .whitespacesAndNewlines).prefix(8_000))
+    }
+
+    public var isValid: Bool {
+        !name.isEmpty && !command.isEmpty
+    }
+}
+
 public struct ApexTerminalProfile: Codable, Equatable, Identifiable, Sendable {
     public var id: UUID
     public var name: String
@@ -233,6 +253,7 @@ public struct ApexSettingsDocument: Codable, Equatable, Sendable {
     public var keybindings: [ApexKeybinding]
     public var general: ApexGeneralSettings
     public var uiControls: UIControlCustomization
+    public var commandPresets: [TerminalCommandPreset]
 
     public init(
         schemaVersion: Int = Self.currentSchemaVersion,
@@ -240,7 +261,8 @@ public struct ApexSettingsDocument: Codable, Equatable, Sendable {
         profiles: [ApexTerminalProfile],
         keybindings: [ApexKeybinding] = Self.defaultKeybindings,
         general: ApexGeneralSettings = ApexGeneralSettings(),
-        uiControls: UIControlCustomization = UIControlCustomization()
+        uiControls: UIControlCustomization = UIControlCustomization(),
+        commandPresets: [TerminalCommandPreset] = []
     ) {
         self.schemaVersion = schemaVersion
         self.profiles = profiles.isEmpty
@@ -252,6 +274,48 @@ public struct ApexSettingsDocument: Codable, Equatable, Sendable {
         self.keybindings = Self.normalizedKeybindings(keybindings)
         self.general = general
         self.uiControls = uiControls
+        self.commandPresets = Self.normalizedCommandPresets(commandPresets)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case activeProfileID
+        case profiles
+        case keybindings
+        case general
+        case uiControls
+        case commandPresets
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            schemaVersion: try container.decodeIfPresent(Int.self, forKey: .schemaVersion)
+                ?? Self.currentSchemaVersion,
+            activeProfileID: try container.decode(UUID.self, forKey: .activeProfileID),
+            profiles: try container.decode([ApexTerminalProfile].self, forKey: .profiles),
+            keybindings: try container.decodeIfPresent([ApexKeybinding].self, forKey: .keybindings)
+                ?? Self.defaultKeybindings,
+            general: try container.decodeIfPresent(ApexGeneralSettings.self, forKey: .general)
+                ?? ApexGeneralSettings(),
+            uiControls: try container.decodeIfPresent(UIControlCustomization.self, forKey: .uiControls)
+                ?? UIControlCustomization(),
+            commandPresets: try container.decodeIfPresent(
+                [TerminalCommandPreset].self,
+                forKey: .commandPresets
+            ) ?? []
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(schemaVersion, forKey: .schemaVersion)
+        try container.encode(activeProfileID, forKey: .activeProfileID)
+        try container.encode(profiles, forKey: .profiles)
+        try container.encode(keybindings, forKey: .keybindings)
+        try container.encode(general, forKey: .general)
+        try container.encode(uiControls, forKey: .uiControls)
+        try container.encode(commandPresets, forKey: .commandPresets)
     }
 
     public var activeProfile: ApexTerminalProfile {
@@ -372,6 +436,24 @@ public struct ApexSettingsDocument: Codable, Equatable, Sendable {
             guard binding.isEnabled else { return true }
             let chordKey = "\(binding.scope.rawValue):\(binding.chord.displayName)"
             return seenChords.insert(chordKey).inserted
+        }
+    }
+
+    private static func normalizedCommandPresets(
+        _ presets: [TerminalCommandPreset]
+    ) -> [TerminalCommandPreset] {
+        var seenIDs: Set<UUID> = []
+        return presets.compactMap { preset in
+            let normalized = TerminalCommandPreset(
+                id: preset.id,
+                name: preset.name,
+                command: preset.command
+            )
+            guard normalized.isValid,
+                  seenIDs.insert(normalized.id).inserted else {
+                return nil
+            }
+            return normalized
         }
     }
 }

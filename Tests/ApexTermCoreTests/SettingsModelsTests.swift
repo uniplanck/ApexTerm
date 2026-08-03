@@ -144,7 +144,13 @@ final class SettingsModelsTests: XCTestCase {
                 accentColorHex: "#FF3366",
                 compactMode: true,
                 autoCollapseLineThreshold: 320
-            )
+            ),
+            commandPresets: [
+                TerminalCommandPreset(
+                    name: "Volume status",
+                    command: "aws ec2 describe-volumes-modifications"
+                )
+            ]
         )
 
         try await store.save(document)
@@ -158,6 +164,55 @@ final class SettingsModelsTests: XCTestCase {
             (attributes[.posixPermissions] as? NSNumber)?.intValue,
             0o600
         )
+    }
+
+    func testCommandPresetsNormalizeInvalidAndDuplicateEntries() {
+        let duplicateID = UUID()
+        let document = ApexSettingsDocument(
+            activeProfileID: ApexSettingsDocument.defaultProfileID,
+            profiles: [ApexSettingsDocument.defaultProfile],
+            commandPresets: [
+                TerminalCommandPreset(
+                    id: duplicateID,
+                    name: "  Status  ",
+                    command: "  git status  "
+                ),
+                TerminalCommandPreset(
+                    id: duplicateID,
+                    name: "Duplicate",
+                    command: "pwd"
+                ),
+                TerminalCommandPreset(name: "", command: "echo ignored"),
+                TerminalCommandPreset(name: "Ignored", command: "")
+            ]
+        )
+
+        XCTAssertEqual(document.commandPresets.count, 1)
+        XCTAssertEqual(document.commandPresets[0].name, "Status")
+        XCTAssertEqual(document.commandPresets[0].command, "git status")
+    }
+
+    func testLegacySettingsDocumentWithoutCommandPresetsDecodesEmptyList() throws {
+        let document = ApexSettingsDocument(
+            activeProfileID: ApexSettingsDocument.defaultProfileID,
+            profiles: [ApexSettingsDocument.defaultProfile],
+            commandPresets: [
+                TerminalCommandPreset(name: "Status", command: "git status")
+            ]
+        )
+        let encoded = try JSONEncoder().encode(document)
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        object.removeValue(forKey: "commandPresets")
+        let legacyData = try JSONSerialization.data(withJSONObject: object)
+
+        let decoded = try JSONDecoder().decode(
+            ApexSettingsDocument.self,
+            from: legacyData
+        )
+
+        XCTAssertTrue(decoded.commandPresets.isEmpty)
     }
 
     func testLegacyGeneralSettingsDecodeWithoutAppearanceFields() throws {

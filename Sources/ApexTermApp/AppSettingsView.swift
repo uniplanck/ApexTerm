@@ -1,6 +1,16 @@
 import ApexTermCore
 import SwiftUI
 
+enum AppSettingsTab: Hashable {
+    case general
+    case profiles
+    case keybindings
+    case buttons
+    case commands
+    case remoteHosts
+    case devSpace
+}
+
 struct AppSettingsView: View {
     @ObservedObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
@@ -21,36 +31,48 @@ struct AppSettingsView: View {
 
             Divider()
 
-            TabView {
+            TabView(selection: $model.settingsTab) {
                 generalSettings
                     .tabItem {
                         Label("General", systemImage: "gearshape")
                     }
+                    .tag(AppSettingsTab.general)
 
                 TerminalProfilesSettingsView(model: model)
                     .tabItem {
                         Label("Profiles", systemImage: "person.crop.rectangle.stack")
                     }
+                    .tag(AppSettingsTab.profiles)
 
                 KeybindingsSettingsView(model: model)
                     .tabItem {
                         Label("Keybindings", systemImage: "keyboard")
                     }
+                    .tag(AppSettingsTab.keybindings)
 
                 UIControlCustomizationView(model: model)
                     .tabItem {
                         Label("Buttons", systemImage: "slider.horizontal.3")
                     }
+                    .tag(AppSettingsTab.buttons)
+
+                CommandPresetsSettingsView(model: model)
+                    .tabItem {
+                        Label("Commands", systemImage: "bolt.horizontal.circle")
+                    }
+                    .tag(AppSettingsTab.commands)
 
                 RemoteHostSettingsView(model: model, embedded: true)
                     .tabItem {
                         Label("Remote Hosts", systemImage: "network")
                     }
+                    .tag(AppSettingsTab.remoteHosts)
 
                 DevSpaceSettingsView()
                     .tabItem {
                         Label("DevSpace", systemImage: "shippingbox")
                     }
+                    .tag(AppSettingsTab.devSpace)
             }
             .padding(12)
         }
