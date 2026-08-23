@@ -27,12 +27,14 @@ private enum WorkspaceSidebarPlacement: String {
 private struct NativeMainToolbarCommandDragMonitor: NSViewRepresentable {
     let controls: [UIControlID]
     @Binding var draggedControl: UIControlID?
+    @Binding var dragLocationX: CGFloat?
     let move: (UIControlID, UIControlID, Bool) -> Void
 
     func makeNSView(context: Context) -> CommandDragMonitorView {
         CommandDragMonitorView(
             controls: controls,
             onDragStateChange: { draggedControl = $0 },
+            onDragLocationChange: { dragLocationX = $0 },
             move: move
         )
     }
@@ -40,6 +42,7 @@ private struct NativeMainToolbarCommandDragMonitor: NSViewRepresentable {
     func updateNSView(_ nsView: CommandDragMonitorView, context: Context) {
         nsView.controls = controls
         nsView.onDragStateChange = { draggedControl = $0 }
+        nsView.onDragLocationChange = { dragLocationX = $0 }
         nsView.move = move
     }
 
@@ -51,11 +54,11 @@ private struct NativeMainToolbarCommandDragMonitor: NSViewRepresentable {
     final class CommandDragMonitorView: NSView {
         var controls: [UIControlID]
         var onDragStateChange: (UIControlID?) -> Void
+        var onDragLocationChange: (CGFloat?) -> Void
         var move: (UIControlID, UIControlID, Bool) -> Void
 
         private var eventMonitor: Any?
         private var sourceControl: UIControlID?
-        private var sourceIndex: Int?
 
         private let horizontalPadding: CGFloat = 6
         private let controlWidth: CGFloat = 22
@@ -64,10 +67,12 @@ private struct NativeMainToolbarCommandDragMonitor: NSViewRepresentable {
         init(
             controls: [UIControlID],
             onDragStateChange: @escaping (UIControlID?) -> Void,
+            onDragLocationChange: @escaping (CGFloat?) -> Void,
             move: @escaping (UIControlID, UIControlID, Bool) -> Void
         ) {
             self.controls = controls
             self.onDragStateChange = onDragStateChange
+            self.onDragLocationChange = onDragLocationChange
             self.move = move
             super.init(frame: .zero)
         }
@@ -92,8 +97,8 @@ private struct NativeMainToolbarCommandDragMonitor: NSViewRepresentable {
                 self.eventMonitor = nil
             }
             sourceControl = nil
-            sourceIndex = nil
             onDragStateChange(nil)
+            onDragLocationChange(nil)
         }
 
         private func startMonitoringIfNeeded() {
@@ -115,32 +120,24 @@ private struct NativeMainToolbarCommandDragMonitor: NSViewRepresentable {
                       let index = sourceIndex(at: event.locationInWindow) else {
                     return event
                 }
-                sourceIndex = index
                 sourceControl = controls[index]
                 onDragStateChange(controls[index])
+                updateDragLocation(event.locationInWindow)
                 return nil
 
             case .leftMouseDragged:
-                return sourceControl == nil ? event : nil
+                guard sourceControl != nil else { return event }
+                updateDragLocation(event.locationInWindow)
+                reorderIfNeeded(at: event.locationInWindow)
+                return nil
 
             case .leftMouseUp:
-                guard let sourceControl,
-                      let sourceIndex else { return event }
-                defer {
-                    self.sourceControl = nil
-                    self.sourceIndex = nil
-                    onDragStateChange(nil)
-                }
-
-                guard let targetIndex = targetIndex(at: event.locationInWindow),
-                      targetIndex != sourceIndex else {
-                    return nil
-                }
-                move(
-                    sourceControl,
-                    controls[targetIndex],
-                    targetIndex > sourceIndex
-                )
+                guard sourceControl != nil else { return event }
+                updateDragLocation(event.locationInWindow)
+                reorderIfNeeded(at: event.locationInWindow)
+                self.sourceControl = nil
+                onDragStateChange(nil)
+                onDragLocationChange(nil)
                 return nil
 
             default:
@@ -172,6 +169,24 @@ private struct NativeMainToolbarCommandDragMonitor: NSViewRepresentable {
             let rawIndex = Int(((point.x - centerOffset) / pitch).rounded())
             return min(max(rawIndex, 0), controls.count - 1)
         }
+
+        private func updateDragLocation(_ windowPoint: NSPoint) {
+            let point = convert(windowPoint, from: nil)
+            let halfWidth = controlWidth / 2
+            onDragLocationChange(min(max(point.x, halfWidth), max(halfWidth, bounds.width - halfWidth)))
+        }
+
+        private func reorderIfNeeded(at windowPoint: NSPoint) {
+            guard let sourceControl,
+                  let currentIndex = controls.firstIndex(of: sourceControl),
+                  let targetIndex = targetIndex(at: windowPoint),
+                  targetIndex != currentIndex else {
+                return
+            }
+
+            let targetControl = controls[targetIndex]
+            move(sourceControl, targetControl, targetIndex > currentIndex)
+        }
     }
 }
 
@@ -193,6 +208,7 @@ struct RootView: View {
     @State private var expandedWorkspaceIDs: Set<UUID> = []
     @State private var expandedRemoteHostAliases: Set<String> = []
     @State private var draggedMainToolbarControl: UIControlID?
+    @State private var mainToolbarDragLocationX: CGFloat?
     @AppStorage("apexterm.sidebar.workspacePlacement") private var workspaceSidebarPlacementRaw = WorkspaceSidebarPlacement.left.rawValue
 
     var body: some View {
@@ -912,17 +928,42 @@ struct RootView: View {
         }
         .padding(.horizontal, 6)
         .frame(height: 34)
+        .animation(.snappy(duration: 0.14), value: controls)
         .background {
             NativeMainToolbarCommandDragMonitor(
                 controls: controls,
-                draggedControl: $draggedMainToolbarControl
+                draggedControl: $draggedMainToolbarControl,
+                dragLocationX: $mainToolbarDragLocationX
             ) { source, target, after in
-                withAnimation(.snappy(duration: 0.16)) {
+                withAnimation(.snappy(duration: 0.14)) {
                     model.moveTopBarControl(
                         source,
                         relativeTo: target,
                         after: after
                     )
+                }
+            }
+        }
+        .overlay(alignment: .leading) {
+            GeometryReader { proxy in
+                if let draggedControl = draggedMainToolbarControl,
+                   let dragLocationX = mainToolbarDragLocationX {
+                    Image(systemName: draggedControl.systemImage)
+                        .font(.system(size: 13, weight: .medium))
+                        .frame(width: 22, height: 24)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 6)
+                                .strokeBorder(.primary.opacity(0.14), lineWidth: 0.5)
+                        }
+                        .shadow(radius: 5, y: 2)
+                        .scaleEffect(1.08)
+                        .position(
+                            x: min(max(dragLocationX, 11), max(11, proxy.size.width - 11)),
+                            y: proxy.size.height / 2
+                        )
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
                 }
             }
         }
@@ -1091,7 +1132,17 @@ struct RootView: View {
         }
         .frame(minWidth: 22, minHeight: 24)
         .contentShape(Rectangle())
-        .opacity(draggedMainToolbarControl == control ? 0.55 : 1)
+        .opacity(draggedMainToolbarControl == control ? 0.18 : 1)
+        .scaleEffect(draggedMainToolbarControl == control ? 0.9 : 1)
+        .background {
+            if draggedMainToolbarControl == control {
+                RoundedRectangle(cornerRadius: 5)
+                    .strokeBorder(
+                        .secondary.opacity(0.45),
+                        style: StrokeStyle(lineWidth: 1, dash: [2, 2])
+                    )
+            }
+        }
         .accessibilityIdentifier("main-toolbar-control-\(control.rawValue)")
     }
 
