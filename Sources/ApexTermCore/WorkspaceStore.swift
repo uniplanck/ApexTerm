@@ -127,10 +127,37 @@ public actor WorkspaceStore {
             document.schemaVersion = 2
         }
 
+        if document.schemaVersion == 2 {
+            for index in document.workspaces.indices {
+                document.workspaces[index].layout = migratePaneLeavesToColumns(
+                    document.workspaces[index].layout
+                )
+            }
+            document.schemaVersion = 3
+        }
+
         return WorkspaceLoadResult(
             document: document,
             migratedFromSchemaVersion: sourceVersion
         )
+    }
+
+    private nonisolated static func migratePaneLeavesToColumns(
+        _ node: SplitNode
+    ) -> SplitNode {
+        switch node {
+        case let .pane(sessionID):
+            return .column(TerminalColumn(sessionID: sessionID))
+        case .column:
+            return node
+        case let .split(axis, ratio, first, second):
+            return .split(
+                axis: axis,
+                ratio: ratio,
+                first: migratePaneLeavesToColumns(first),
+                second: migratePaneLeavesToColumns(second)
+            )
+        }
     }
 
     private struct SchemaEnvelope: Decodable {

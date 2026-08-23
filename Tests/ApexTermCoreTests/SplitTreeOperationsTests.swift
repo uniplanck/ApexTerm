@@ -2,7 +2,7 @@ import XCTest
 @testable import ApexTermCore
 
 final class SplitTreeOperationsTests: XCTestCase {
-    func testSplitAddsSessionAndPreservesExistingSession() {
+    func testLegacyPaneSplitBecomesTwoTerminalColumns() {
         let first = UUID()
         let second = UUID()
         let result = SplitTreeOperations.split(
@@ -13,19 +13,149 @@ final class SplitTreeOperationsTests: XCTestCase {
         )
 
         XCTAssertEqual(SplitTreeOperations.sessionIDs(in: result), [first, second])
+        XCTAssertEqual(SplitTreeOperations.columnCount(in: result), 2)
         XCTAssertTrue(SplitTreeOperations.contains(sessionID: first, in: result))
         XCTAssertTrue(SplitTreeOperations.contains(sessionID: second, in: result))
+        XCTAssertNotNil(SplitTreeOperations.column(containing: first, in: result))
+        XCTAssertNotNil(SplitTreeOperations.column(containing: second, in: result))
     }
 
-    func testNestedSplitTargetsOnlyRequestedPane() {
+    func testAddingSessionCreatesTabWithoutAddingColumn() {
+        let first = UUID()
+        let second = UUID()
+        let column = TerminalColumn(id: UUID(), sessionIDs: [first], selectedSessionID: first)
+
+        let result = SplitTreeOperations.addingSession(
+            second,
+            toColumnContaining: first,
+            in: .column(column)
+        )
+
+        XCTAssertEqual(SplitTreeOperations.columnCount(in: result), 1)
+        XCTAssertEqual(SplitTreeOperations.sessionIDs(in: result), [first, second])
+        XCTAssertEqual(SplitTreeOperations.column(containing: first, in: result)?.selectedSessionID, second)
+    }
+
+    func testRemovingTabKeepsColumnAndSelectsSurvivingTab() {
+        let first = UUID()
+        let second = UUID()
+        let columnID = UUID()
+        let root = SplitNode.column(
+            TerminalColumn(
+                id: columnID,
+                sessionIDs: [first, second],
+                selectedSessionID: second
+            )
+        )
+
+        let result = SplitTreeOperations.removing(sessionID: second, from: root)
+
+        XCTAssertEqual(SplitTreeOperations.sessionIDs(in: try! XCTUnwrap(result)), [first])
+        XCTAssertEqual(SplitTreeOperations.columnCount(in: try! XCTUnwrap(result)), 1)
+        XCTAssertEqual(
+            SplitTreeOperations.column(id: columnID, in: try! XCTUnwrap(result))?.selectedSessionID,
+            first
+        )
+    }
+
+    func testMovingTabWithinColumnReordersIt() {
+        let first = UUID()
+        let second = UUID()
+        let third = UUID()
+        let root = SplitNode.column(
+            TerminalColumn(sessionIDs: [first, second, third], selectedSessionID: first)
+        )
+
+        let result = SplitTreeOperations.movingSession(
+            third,
+            relativeTo: first,
+            after: false,
+            in: root
+        )
+
+        XCTAssertEqual(SplitTreeOperations.sessionIDs(in: result), [third, first, second])
+        XCTAssertEqual(SplitTreeOperations.column(containing: third, in: result)?.selectedSessionID, third)
+    }
+
+    func testMovingTabAcrossColumnsCollapsesEmptySourceColumn() {
+        let source = UUID()
+        let target = UUID()
+        let sibling = UUID()
+        let root = SplitNode.split(
+            axis: .vertical,
+            ratio: 0.5,
+            first: .column(TerminalColumn(sessionID: source)),
+            second: .column(
+                TerminalColumn(sessionIDs: [target, sibling], selectedSessionID: target)
+            )
+        )
+
+        let result = SplitTreeOperations.movingSession(
+            source,
+            relativeTo: target,
+            after: true,
+            in: root
+        )
+
+        XCTAssertEqual(SplitTreeOperations.columnCount(in: result), 1)
+        XCTAssertEqual(SplitTreeOperations.sessionIDs(in: result), [target, source, sibling])
+        XCTAssertEqual(SplitTreeOperations.column(containing: source, in: result)?.selectedSessionID, source)
+    }
+
+    func testMovingTabToColumnCenterAppendsAndSelects() {
+        let source = UUID()
+        let target = UUID()
+        let sibling = UUID()
+        let root = SplitNode.split(
+            axis: .vertical,
+            ratio: 0.5,
+            first: .column(TerminalColumn(sessionID: source)),
+            second: .column(
+                TerminalColumn(sessionIDs: [target, sibling], selectedSessionID: target)
+            )
+        )
+
+        let result = SplitTreeOperations.movingSessionToColumnEnd(
+            source,
+            targetSessionID: target,
+            in: root
+        )
+
+        XCTAssertEqual(SplitTreeOperations.columnCount(in: result), 1)
+        XCTAssertEqual(SplitTreeOperations.sessionIDs(in: result), [target, sibling, source])
+        XCTAssertEqual(SplitTreeOperations.column(containing: source, in: result)?.selectedSessionID, source)
+    }
+
+    func testSplitPreservesExistingTabsInsideOriginalColumn() {
+        let first = UUID()
+        let second = UUID()
+        let newSession = UUID()
+        let root = SplitNode.column(
+            TerminalColumn(sessionIDs: [first, second], selectedSessionID: second)
+        )
+
+        let result = SplitTreeOperations.split(
+            sessionID: second,
+            newSessionID: newSession,
+            axis: .vertical,
+            in: root
+        )
+
+        XCTAssertEqual(SplitTreeOperations.columnCount(in: result), 2)
+        XCTAssertEqual(SplitTreeOperations.sessionIDs(in: result), [first, second, newSession])
+        XCTAssertEqual(SplitTreeOperations.column(containing: first, in: result)?.sessionIDs, [first, second])
+        XCTAssertEqual(SplitTreeOperations.column(containing: newSession, in: result)?.sessionIDs, [newSession])
+    }
+
+    func testNestedSplitTargetsOnlyRequestedColumn() {
         let first = UUID()
         let second = UUID()
         let third = UUID()
         let root = SplitNode.split(
             axis: .horizontal,
             ratio: 0.5,
-            first: .pane(sessionID: first),
-            second: .pane(sessionID: second)
+            first: .column(TerminalColumn(sessionID: first)),
+            second: .column(TerminalColumn(sessionID: second))
         )
 
         let result = SplitTreeOperations.split(
@@ -36,29 +166,31 @@ final class SplitTreeOperationsTests: XCTestCase {
         )
 
         XCTAssertEqual(SplitTreeOperations.sessionIDs(in: result), [first, second, third])
+        XCTAssertEqual(SplitTreeOperations.columnCount(in: result), 3)
     }
 
-    func testRemovingPaneCollapsesItsParentSplit() {
+    func testRemovingLastTabCollapsesItsParentSplit() {
         let first = UUID()
         let second = UUID()
+        let firstColumn = TerminalColumn(id: UUID(), sessionIDs: [first], selectedSessionID: first)
         let root = SplitNode.split(
             axis: .vertical,
             ratio: 0.5,
-            first: .pane(sessionID: first),
-            second: .pane(sessionID: second)
+            first: .column(firstColumn),
+            second: .column(TerminalColumn(sessionID: second))
         )
 
         let result = SplitTreeOperations.removing(sessionID: second, from: root)
 
-        XCTAssertEqual(result, .pane(sessionID: first))
+        XCTAssertEqual(result, .column(firstColumn))
     }
 
-    func testPaneCountStopsAtSupportedLimit() {
+    func testColumnCountStopsAtSupportedLimit() {
         let rootID = UUID()
-        var tree = SplitNode.pane(sessionID: rootID)
+        var tree = SplitNode.column(TerminalColumn(sessionID: rootID))
         var selectedID = rootID
 
-        for _ in 1..<SplitTreeOperations.maximumPaneCount {
+        for _ in 1..<SplitTreeOperations.maximumColumnCount {
             let newID = UUID()
             tree = SplitTreeOperations.split(
                 sessionID: selectedID,
@@ -78,13 +210,13 @@ final class SplitTreeOperationsTests: XCTestCase {
         )
 
         XCTAssertEqual(
-            SplitTreeOperations.paneCount(in: unchanged),
-            SplitTreeOperations.maximumPaneCount
+            SplitTreeOperations.columnCount(in: unchanged),
+            SplitTreeOperations.maximumColumnCount
         )
         XCTAssertFalse(SplitTreeOperations.contains(sessionID: rejectedID, in: unchanged))
     }
 
-    func testNewPaneCanBeInsertedBeforeTargetForDropPreview() {
+    func testNewColumnCanBeInsertedBeforeTargetForDropPreview() {
         let existing = UUID()
         let inserted = UUID()
         let result = SplitTreeOperations.split(
@@ -92,21 +224,19 @@ final class SplitTreeOperationsTests: XCTestCase {
             newSessionID: inserted,
             axis: .vertical,
             newPaneFirst: true,
-            in: .pane(sessionID: existing)
+            in: .column(TerminalColumn(sessionID: existing))
         )
 
-        XCTAssertEqual(
-            result,
-            .split(
-                axis: .vertical,
-                ratio: 0.5,
-                first: .pane(sessionID: inserted),
-                second: .pane(sessionID: existing)
-            )
-        )
+        guard case let .split(axis, ratio, first, second) = result else {
+            return XCTFail("Expected split")
+        }
+        XCTAssertEqual(axis, .vertical)
+        XCTAssertEqual(ratio, 0.5)
+        XCTAssertEqual(SplitTreeOperations.sessionIDs(in: first), [inserted])
+        XCTAssertEqual(SplitTreeOperations.sessionIDs(in: second), [existing])
     }
 
-    func testNestedSubtreeCanBeInsertedAtSpecificPane() {
+    func testNestedSubtreeCanBeInsertedAtSpecificColumn() {
         let targetLeft = UUID()
         let targetRight = UUID()
         let movedTop = UUID()
@@ -114,14 +244,14 @@ final class SplitTreeOperationsTests: XCTestCase {
         let target = SplitNode.split(
             axis: .vertical,
             ratio: 0.5,
-            first: .pane(sessionID: targetLeft),
-            second: .pane(sessionID: targetRight)
+            first: .column(TerminalColumn(sessionID: targetLeft)),
+            second: .column(TerminalColumn(sessionID: targetRight))
         )
         let moved = SplitNode.split(
             axis: .horizontal,
             ratio: 0.5,
-            first: .pane(sessionID: movedTop),
-            second: .pane(sessionID: movedBottom)
+            first: .column(TerminalColumn(sessionID: movedTop)),
+            second: .column(TerminalColumn(sessionID: movedBottom))
         )
 
         let result = SplitTreeOperations.inserting(
@@ -136,18 +266,25 @@ final class SplitTreeOperationsTests: XCTestCase {
             SplitTreeOperations.sessionIDs(in: result),
             [targetLeft, movedTop, movedBottom, targetRight]
         )
-        XCTAssertEqual(SplitTreeOperations.paneCount(in: result), 4)
+        XCTAssertEqual(SplitTreeOperations.columnCount(in: result), 4)
     }
 
-    func testReplacingSessionPreservesTreeShape() {
+    func testReplacingSessionPreservesColumnAndTreeShape() {
         let first = UUID()
         let second = UUID()
         let replacement = UUID()
+        let firstColumnID = UUID()
         let tree = SplitNode.split(
             axis: .vertical,
             ratio: 0.4,
-            first: .pane(sessionID: first),
-            second: .pane(sessionID: second)
+            first: .column(
+                TerminalColumn(
+                    id: firstColumnID,
+                    sessionIDs: [first],
+                    selectedSessionID: first
+                )
+            ),
+            second: .column(TerminalColumn(sessionID: second))
         )
 
         let result = SplitTreeOperations.replacing(
@@ -157,31 +294,14 @@ final class SplitTreeOperationsTests: XCTestCase {
         )
 
         XCTAssertEqual(SplitTreeOperations.sessionIDs(in: result), [replacement, second])
+        XCTAssertEqual(
+            SplitTreeOperations.column(id: firstColumnID, in: result)?.selectedSessionID,
+            replacement
+        )
         guard case let .split(_, ratio, _, _) = result else {
             return XCTFail("Expected split")
         }
         XCTAssertEqual(ratio, 0.4)
-    }
-
-    func testSwappingSessionsSupportsPaneHeaderReordering() {
-        let first = UUID()
-        let second = UUID()
-        let third = UUID()
-        let tree = SplitNode.split(
-            axis: .vertical,
-            ratio: 0.5,
-            first: .pane(sessionID: first),
-            second: .split(
-                axis: .horizontal,
-                ratio: 0.5,
-                first: .pane(sessionID: second),
-                second: .pane(sessionID: third)
-            )
-        )
-
-        let result = SplitTreeOperations.swappingSessions(first, third, in: tree)
-
-        XCTAssertEqual(SplitTreeOperations.sessionIDs(in: result), [third, second, first])
     }
 
     func testSplitRatioIsClamped() {
@@ -192,7 +312,7 @@ final class SplitTreeOperationsTests: XCTestCase {
             newSessionID: second,
             axis: .horizontal,
             ratio: 5,
-            in: .pane(sessionID: first)
+            in: .column(TerminalColumn(sessionID: first))
         )
 
         guard case let .split(_, ratio, _, _) = result else {

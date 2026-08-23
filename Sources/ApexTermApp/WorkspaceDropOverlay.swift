@@ -15,7 +15,7 @@ struct WorkspaceDropPreview: View {
             .clipShape(RoundedRectangle(cornerRadius: 2))
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("workspace-pane-drop-preview")
-            .accessibilityLabel("Pane drop destination: \(title(for: activeRegion))")
+            .accessibilityLabel("Terminal tab drop destination: \(title(for: activeRegion))")
         }
         .transition(.opacity)
     }
@@ -45,15 +45,15 @@ struct WorkspaceDropPreview: View {
     private func title(for region: TerminalDropRegion) -> String {
         switch region {
         case .center:
-            "WHOLE"
+            "IN COLUMN"
         case .left:
-            "LEFT"
+            "NEW LEFT"
         case .right:
-            "RIGHT"
+            "NEW RIGHT"
         case .top:
-            "TOP"
+            "NEW ABOVE"
         case .bottom:
-            "BOTTOM"
+            "NEW BELOW"
         }
     }
 

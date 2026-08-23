@@ -9,6 +9,54 @@ private final class FixedWidthTranscriptModeButton: NSButton {
     }
 }
 
+private struct NativeColumnAddTabButton: NSViewRepresentable {
+    let accessibilityIdentifier: String
+    let action: @MainActor () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(action: action)
+    }
+
+    func makeNSView(context: Context) -> NSButton {
+        let button = NSButton(
+            image: NSImage(
+                systemSymbolName: "plus",
+                accessibilityDescription: "New terminal tab in this column"
+            ) ?? NSImage(),
+            target: context.coordinator,
+            action: #selector(Coordinator.performAction(_:))
+        )
+        button.identifier = NSUserInterfaceItemIdentifier(accessibilityIdentifier)
+        button.setAccessibilityIdentifier(accessibilityIdentifier)
+        button.setAccessibilityLabel("New terminal tab in this column")
+        button.toolTip = "New terminal tab in this column"
+        button.isBordered = false
+        button.focusRingType = .none
+        button.imagePosition = .imageOnly
+        button.setButtonType(.momentaryPushIn)
+        return button
+    }
+
+    func updateNSView(_ button: NSButton, context: Context) {
+        context.coordinator.action = action
+        button.identifier = NSUserInterfaceItemIdentifier(accessibilityIdentifier)
+        button.setAccessibilityIdentifier(accessibilityIdentifier)
+    }
+
+    @MainActor
+    final class Coordinator: NSObject {
+        var action: @MainActor () -> Void
+
+        init(action: @escaping @MainActor () -> Void) {
+            self.action = action
+        }
+
+        @objc func performAction(_ sender: NSButton) {
+            action()
+        }
+    }
+}
+
 private struct CommandTranscriptModeCycleButton: NSViewRepresentable {
     @Binding var mode: CommandTranscriptMode
 
@@ -60,6 +108,7 @@ struct SplitTreeView: View {
     let node: SplitNode
     @ObservedObject var model: AppModel
     @State private var activeDropRegion: TerminalDropRegion?
+    @State private var terminalTabDropIndicator: TerminalTabDropIndicator?
     @State private var renameSessionID: UUID?
     @State private var renameDraft = ""
     @State private var livePaneHeights: [UUID: Double] = [:]
@@ -77,14 +126,22 @@ struct SplitTreeView: View {
         Group {
             switch node {
             case let .pane(sessionID):
-                pane(sessionID: sessionID)
+                terminalColumn(
+                    TerminalColumn(
+                        id: sessionID,
+                        sessionIDs: [sessionID],
+                        selectedSessionID: sessionID
+                    )
+                )
+            case let .column(column):
+                terminalColumn(column)
             case let .split(axis, ratio, first, second):
                 splitView(axis: axis, ratio: ratio, first: first, second: second)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .alert(
-            "Rename Pane",
+            "Rename Tab",
             isPresented: Binding(
                 get: { renameSessionID != nil },
                 set: { presented in
@@ -92,7 +149,7 @@ struct SplitTreeView: View {
                 }
             )
         ) {
-            TextField("Pane name", text: $renameDraft)
+            TextField("Tab name", text: $renameDraft)
             Button("Cancel", role: .cancel) {}
             Button("Rename") {
                 if let renameSessionID {
@@ -103,7 +160,215 @@ struct SplitTreeView: View {
     }
 
     @ViewBuilder
-    private func pane(sessionID: UUID) -> some View {
+    private func terminalColumn(_ column: TerminalColumn) -> some View {
+        let resolvedSessionID = model.session(id: column.selectedSessionID) != nil
+            ? column.selectedSessionID
+            : column.sessionIDs.first(where: { model.session(id: $0) != nil })
+        let isFocused = model.selectedSessionID.map(column.sessionIDs.contains) ?? false
+
+        if let resolvedSessionID {
+            VStack(spacing: 0) {
+                terminalColumnHeader(
+                    column: column,
+                    selectedSessionID: resolvedSessionID,
+                    isFocused: isFocused
+                )
+                Divider()
+                pane(sessionID: resolvedSessionID, showsHeader: false)
+            }
+            .background(Color(nsColor: .windowBackgroundColor))
+            .overlay {
+                if Self.showsSelectionOutline(
+                    isSelected: isFocused,
+                    isCompactMode: model.isCompactMode
+                ) {
+                    RoundedRectangle(cornerRadius: 1)
+                        .stroke(Color.accentColor.opacity(0.7), lineWidth: 1)
+                        .allowsHitTesting(false)
+                }
+            }
+            .accessibilityIdentifier("terminal-column-\(column.id.uuidString)")
+        } else {
+            ContentUnavailableView(
+                "Missing Terminal Tabs",
+                systemImage: "exclamationmark.triangle",
+                description: Text("This column references unavailable terminal sessions.")
+            )
+        }
+    }
+
+    private func terminalColumnHeader(
+        column: TerminalColumn,
+        selectedSessionID: UUID,
+        isFocused: Bool
+    ) -> some View {
+        HStack(spacing: 0) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 2) {
+                    ForEach(column.sessionIDs, id: \.self) { sessionID in
+                        if let session = model.session(id: sessionID) {
+                            terminalColumnTab(
+                                session: session,
+                                isSelected: sessionID == selectedSessionID,
+                                isColumnFocused: isFocused
+                            )
+                        }
+                    }
+                }
+                .padding(.horizontal, 4)
+                .frame(minHeight: 31)
+            }
+
+            if isFocused {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 4) {
+                        Text(model.commandStatus(sessionID: selectedSessionID) ?? "")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        commandPresetMenu(sessionID: selectedSessionID)
+                        CommandTranscriptModeCycleButton(mode: $model.commandTranscriptMode)
+                            .frame(width: 30, height: 20)
+                        columnAddButton(anchorSessionID: selectedSessionID)
+                    }
+                    HStack(spacing: 4) {
+                        CommandTranscriptModeCycleButton(mode: $model.commandTranscriptMode)
+                            .frame(width: 30, height: 20)
+                        columnAddButton(anchorSessionID: selectedSessionID)
+                    }
+                    columnAddButton(anchorSessionID: selectedSessionID)
+                }
+                .fixedSize(horizontal: true, vertical: false)
+                .padding(.trailing, 5)
+            }
+        }
+        .frame(height: 32)
+        .background(
+            isFocused
+                ? Color.accentColor.opacity(0.07)
+                : Color(nsColor: .controlBackgroundColor)
+        )
+    }
+
+    private func terminalColumnTab(
+        session: TerminalSession,
+        isSelected: Bool,
+        isColumnFocused: Bool
+    ) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "circle.grid.2x2")
+                .font(.system(size: 8, weight: .medium))
+                .foregroundStyle(.tertiary)
+            Circle()
+                .fill(statusColor(for: session.state))
+                .frame(width: 7, height: 7)
+            Text(session.title)
+                .font(.caption.weight(isSelected ? .semibold : .medium))
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 2)
+            Button {
+                model.closeSession(id: session.id)
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .semibold))
+            }
+            .buttonStyle(.plain)
+            .help("Close terminal tab")
+        }
+        .padding(.horizontal, 8)
+        .frame(width: 168, height: 28)
+        .contentShape(Rectangle())
+        .background(
+            isSelected
+                ? Color.accentColor.opacity(isColumnFocused ? 0.16 : 0.10)
+                : Color.clear
+        )
+        .overlay {
+            if isSelected {
+                RoundedRectangle(cornerRadius: 4)
+                    .stroke(Color.accentColor.opacity(isColumnFocused ? 0.7 : 0.35), lineWidth: 1)
+            }
+        }
+        .overlay {
+            if let indicator = terminalTabDropIndicator,
+               indicator.targetSessionID == session.id {
+                HStack(spacing: 0) {
+                    if indicator.after { Spacer(minLength: 0) }
+                    Rectangle()
+                        .fill(Color.accentColor)
+                        .frame(width: 2)
+                    if !indicator.after { Spacer(minLength: 0) }
+                }
+                .padding(.vertical, 3)
+                .allowsHitTesting(false)
+            }
+        }
+        .onTapGesture {
+            model.selectSession(session.id)
+        }
+        .onTapGesture(count: 2) {
+            renameSessionID = session.id
+            renameDraft = session.title
+        }
+        .onDrag {
+            model.selectSession(session.id)
+            return TerminalDragPayload(kind: .workspacePane, id: session.id).itemProvider()
+        }
+        .onDrop(
+            of: [.apexTermTerminalTab],
+            delegate: TerminalTabDropDelegate(
+                targetSessionID: session.id,
+                width: 168,
+                indicator: $terminalTabDropIndicator
+            ) { payload, targetSessionID, after in
+                guard let sourceSessionID = payload.workspacePaneSessionID else { return }
+                withAnimation(.snappy(duration: 0.18)) {
+                    if let workspace = model.workspaces.first(where: { $0.id == workspaceID }),
+                       let sourceColumn = SplitTreeOperations.column(
+                           containing: sourceSessionID,
+                           in: workspace.layout
+                       ),
+                       let targetColumn = SplitTreeOperations.column(
+                           containing: targetSessionID,
+                           in: workspace.layout
+                       ),
+                       sourceColumn.id == targetColumn.id {
+                        model.reorderTerminalTab(
+                            sourceSessionID: sourceSessionID,
+                            relativeTo: targetSessionID,
+                            after: after
+                        )
+                    } else {
+                        model.dropWorkspacePane(
+                            sourceSessionID: sourceSessionID,
+                            ontoWorkspace: workspaceID,
+                            targetSessionID: targetSessionID,
+                            region: .center
+                        )
+                    }
+                }
+            }
+        )
+        .background {
+            NativeTerminalTabProbe(sessionID: session.id)
+                .allowsHitTesting(false)
+        }
+        .help("Drag to reorder, move into another column, or drop on a column edge")
+        .accessibilityIdentifier("terminal-column-tab-\(session.id.uuidString)")
+    }
+
+    private func columnAddButton(anchorSessionID: UUID) -> some View {
+        NativeColumnAddTabButton(
+            accessibilityIdentifier: "terminal-column-add-tab-\(anchorSessionID.uuidString)"
+        ) {
+            model.addTerminalTab(toColumnContaining: anchorSessionID)
+        }
+        .frame(width: 22, height: 22)
+    }
+
+    @ViewBuilder
+    private func pane(sessionID: UUID, showsHeader: Bool = true) -> some View {
         if let session = model.session(id: sessionID) {
             GeometryReader { proxy in
                 let transcriptMode = model.commandTranscriptMode
@@ -128,7 +393,7 @@ struct SplitTreeView: View {
                     min(max(CGFloat(height), minimumLivePaneHeight), maximumLivePaneHeight)
                 }
                 let manualLivePaneHeight = previewLivePaneHeight ?? resolvedLivePaneHeight
-                let paneHeaderTopInset: CGFloat = model.isCompactMode ? 5 : 0
+                let paneHeaderTopInset: CGFloat = showsHeader && model.isCompactMode ? 5 : 0
                 let transcriptLayout = CommandTranscriptLayoutPolicy.resolve(
                     mode: transcriptMode,
                     showsTranscript: showsTranscript,
@@ -137,7 +402,7 @@ struct SplitTreeView: View {
                     preferredLivePaneHeight: Double(manualLivePaneHeight),
                     minimumLivePaneHeight: Double(minimumLivePaneHeight),
                     maximumLivePaneHeight: Double(maximumLivePaneHeight),
-                    headerHeight: Double(26 + paneHeaderTopInset),
+                    headerHeight: showsHeader ? Double(26 + paneHeaderTopInset) : 0,
                     resizeHandleHeight: 12
                 )
                 let resolvedTranscriptHeight = CGFloat(transcriptLayout.transcriptHeight)
@@ -145,7 +410,8 @@ struct SplitTreeView: View {
 
                 ZStack {
                     VStack(spacing: 0) {
-                        ZStack {
+                        if showsHeader {
+                            ZStack {
                             HStack(spacing: 7) {
                                 Image(systemName: "line.3.horizontal")
                                     .font(.caption2)
@@ -196,9 +462,10 @@ struct SplitTreeView: View {
                                 ? Color.accentColor.opacity(0.14)
                                 : Color(nsColor: .controlBackgroundColor)
                         )
-                        .help("Drag into another pane, then choose top, bottom, left, right, or whole")
+                        .help("Drag into another column, then choose top, bottom, left, right, or whole")
 
-                        Divider()
+                            Divider()
+                        }
 
                         if showsTranscript {
                             TerminalCommandTranscript(
@@ -351,7 +618,7 @@ struct SplitTreeView: View {
                 }
                 .overlay {
                     if Self.showsSelectionOutline(
-                        isSelected: sessionID == model.selectedSessionID,
+                        isSelected: showsHeader && sessionID == model.selectedSessionID,
                         isCompactMode: model.isCompactMode
                     ) {
                         RoundedRectangle(cornerRadius: 1)
@@ -369,6 +636,13 @@ struct SplitTreeView: View {
                             if let source = payload.mainTabReference {
                                 model.dropMainTab(
                                     source,
+                                    ontoWorkspace: workspaceID,
+                                    targetSessionID: sessionID,
+                                    region: region
+                                )
+                            } else if let sourceSessionID = payload.workspacePaneSessionID {
+                                model.dropWorkspacePane(
+                                    sourceSessionID: sourceSessionID,
                                     ontoWorkspace: workspaceID,
                                     targetSessionID: sessionID,
                                     region: region

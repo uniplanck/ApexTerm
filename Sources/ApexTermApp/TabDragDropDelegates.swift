@@ -88,6 +88,59 @@ struct MainTabDropDelegate: DropDelegate {
     }
 }
 
+struct TerminalTabDropIndicator: Equatable {
+    let targetSessionID: UUID
+    let after: Bool
+}
+
+struct TerminalTabDropDelegate: DropDelegate {
+    let targetSessionID: UUID
+    let width: CGFloat
+    @Binding var indicator: TerminalTabDropIndicator?
+    let onPayload: @MainActor @Sendable (TerminalDragPayload, UUID, Bool) -> Void
+
+    func validateDrop(info: DropInfo) -> Bool {
+        info.hasItemsConforming(to: [.apexTermTerminalTab])
+    }
+
+    func dropEntered(info: DropInfo) {
+        updateIndicator(location: info.location)
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        updateIndicator(location: info.location)
+        return DropProposal(operation: .move)
+    }
+
+    func dropExited(info: DropInfo) {
+        if indicator?.targetSessionID == targetSessionID {
+            indicator = nil
+        }
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        let after = info.location.x >= max(1, width) / 2
+        indicator = nil
+        guard let provider = info.itemProviders(for: [.apexTermTerminalTab]).first else {
+            return false
+        }
+        TerminalDragPayload.load(from: provider) { payload in
+            guard let payload else { return }
+            Task { @MainActor in
+                onPayload(payload, targetSessionID, after)
+            }
+        }
+        return true
+    }
+
+    private func updateIndicator(location: CGPoint) {
+        indicator = TerminalTabDropIndicator(
+            targetSessionID: targetSessionID,
+            after: location.x >= max(1, width) / 2
+        )
+    }
+}
+
 struct WorkspacePaneDropDelegate: DropDelegate {
     let size: CGSize
     @Binding var region: TerminalDropRegion?

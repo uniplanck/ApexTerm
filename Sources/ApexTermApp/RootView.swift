@@ -182,8 +182,8 @@ struct RootView: View {
                 }
             }
         }
-        .alert("Rename Pane", isPresented: $isRenameSessionPresented) {
-            TextField("Pane name", text: $renameDraft)
+        .alert("Rename Terminal Tab", isPresented: $isRenameSessionPresented) {
+            TextField("Tab name", text: $renameDraft)
             Button("Cancel", role: .cancel) {}
             Button("Rename") {
                 if let renameSessionID {
@@ -227,6 +227,7 @@ struct RootView: View {
             }
             await runUniversalSearchProbeIfRequested()
             await runCommandTimelineProbeIfRequested()
+            await runColumnTabsProbeIfRequested()
             await runFeatureProbeIfRequested()
             await runTmuxManagerProbeIfRequested()
             await runCopyProbeIfRequested()
@@ -509,7 +510,7 @@ struct RootView: View {
                             beginRenameSession(session)
                         }
                     )
-                    .help("Select Pane. Double-click or right-click to rename.")
+                    .help("Select terminal tab. Double-click or right-click to rename.")
                     .contextMenu {
                         sessionContextMenu(session)
                     }
@@ -682,14 +683,14 @@ struct RootView: View {
                 Button("Split Top / Bottom") {
                     model.splitSelected(axis: .horizontal)
                 }
-                Button("Close Selected Pane") {
+                Button("Close Selected Tab") {
                     model.closeSelectedSession()
                 }
-                Button(model.maximizedSessionID == nil ? "Maximize Selected Pane" : "Restore Pane Layout") {
+                Button(model.maximizedSessionID == nil ? "Maximize Selected Column" : "Restore Column Layout") {
                     model.toggleMaximizeSelectedPane()
                 }
-                Button("Next Pane") { model.selectAdjacentPane(offset: 1) }
-                Button("Previous Pane") { model.selectAdjacentPane(offset: -1) }
+                Button("Next Terminal") { model.selectAdjacentPane(offset: 1) }
+                Button("Previous Terminal") { model.selectAdjacentPane(offset: -1) }
 
                 Divider()
 
@@ -737,7 +738,9 @@ struct RootView: View {
                 .truncationMode(.middle)
             Spacer(minLength: 8)
 
-            ForEach(model.visibleMainToolbarControls) { control in
+            ForEach(
+                Array(model.visibleMainToolbarControls.suffix(layout.mainToolbarControlCapacity))
+            ) { control in
                 mainToolbarControl(control, layout: layout)
             }
         }
@@ -797,7 +800,7 @@ struct RootView: View {
                 model.splitSelected(axis: .horizontal)
             }
         case .closePane:
-            toolbarButton("xmark", help: "Close Selected Pane") {
+            toolbarButton("xmark", help: "Close Selected Tab") {
                 model.closeSelectedSession()
             }
         case .maximizePane:
@@ -805,7 +808,7 @@ struct RootView: View {
                 model.maximizedSessionID == nil
                     ? "arrow.up.left.and.arrow.down.right"
                     : "arrow.down.right.and.arrow.up.left",
-                help: model.maximizedSessionID == nil ? "Maximize Selected Pane" : "Restore Pane Layout"
+                help: model.maximizedSessionID == nil ? "Maximize Selected Column" : "Restore Column Layout"
             ) {
                 model.toggleMaximizeSelectedPane()
             }
@@ -870,7 +873,13 @@ struct RootView: View {
               ) else {
             return workspace.layout
         }
-        return .pane(sessionID: maximizedSessionID)
+        if let column = SplitTreeOperations.column(
+            containing: maximizedSessionID,
+            in: workspace.layout
+        ) {
+            return .column(column)
+        }
+        return .column(TerminalColumn(sessionID: maximizedSessionID))
     }
 
     private func statusBar(compact: Bool) -> some View {
@@ -1919,6 +1928,92 @@ struct RootView: View {
     }
 
     @MainActor
+    private func runColumnTabsProbeIfRequested() async {
+        let environment = ProcessInfo.processInfo.environment
+        guard let outputPath = environment["APEXTERM_COLUMN_TABS_PROBE_FILE"],
+              !outputPath.isEmpty else {
+            return
+        }
+
+        model.isCompactMode = false
+        syncCompactTitlebar(on: mainWindow)
+
+        guard let workspace = model.selectedWorkspace,
+              let initialSessionID = SplitTreeOperations.sessionIDs(in: workspace.layout).first else {
+            return
+        }
+
+        model.selectWorkspace(workspace)
+        model.selectSession(initialSessionID)
+        model.splitSession(id: initialSessionID, axis: .vertical)
+        try? await Task.sleep(for: .milliseconds(220))
+
+        guard let splitWorkspace = model.workspaces.first(where: { $0.id == workspace.id }),
+              let focusedSessionID = model.selectedSessionID,
+              let focusedColumnBefore = SplitTreeOperations.column(
+                  containing: focusedSessionID,
+                  in: splitWorkspace.layout
+              ) else {
+            return
+        }
+
+        let splitSessionIDs = SplitTreeOperations.sessionIDs(in: splitWorkspace.layout)
+        let nonFocusedSessionID = splitSessionIDs.first { !focusedColumnBefore.sessionIDs.contains($0) }
+        let columnsBefore = SplitTreeOperations.columnCount(in: splitWorkspace.layout)
+        let tabsBefore = splitSessionIDs.count
+        let focusedAddIdentifier = "terminal-column-add-tab-\(focusedSessionID.uuidString)"
+        let focusedAddView = findView(accessibilityIdentifier: focusedAddIdentifier)
+        let focusedPlusVisible = focusedAddView != nil
+        let nonFocusedPlusHidden = nonFocusedSessionID.map {
+            findView(accessibilityIdentifier: "terminal-column-add-tab-\($0.uuidString)") == nil
+        } ?? false
+
+        let plusPressed: Bool
+        if let button = focusedAddView as? NSButton {
+            button.performClick(nil)
+            plusPressed = true
+        } else {
+            plusPressed = focusedAddView?.accessibilityPerformPress() ?? false
+        }
+        try? await Task.sleep(for: .milliseconds(240))
+
+        guard let updatedWorkspace = model.workspaces.first(where: { $0.id == workspace.id }) else {
+            return
+        }
+        let columnsAfter = SplitTreeOperations.columnCount(in: updatedWorkspace.layout)
+        let tabsAfter = SplitTreeOperations.sessionIDs(in: updatedWorkspace.layout).count
+        let newSelectedSessionID = model.selectedSessionID
+        let focusedColumnAfter = SplitTreeOperations.column(
+            containing: focusedSessionID,
+            in: updatedWorkspace.layout
+        )
+        let addedInsideFocusedColumn = newSelectedSessionID.map { selectedID in
+            selectedID != focusedSessionID
+                && focusedColumnAfter?.sessionIDs.contains(focusedSessionID) == true
+                && focusedColumnAfter?.sessionIDs.contains(selectedID) == true
+                && focusedColumnAfter?.sessionIDs.count == focusedColumnBefore.sessionIDs.count + 1
+        } ?? false
+        let selectedPlusVisible = newSelectedSessionID.map {
+            findView(accessibilityIdentifier: "terminal-column-add-tab-\($0.uuidString)") != nil
+        } ?? false
+
+        let result = [
+            "two_columns=\(columnsBefore == 2 ? 1 : 0)",
+            "focused_plus_visible=\(focusedPlusVisible ? 1 : 0)",
+            "nonfocused_plus_hidden=\(nonFocusedPlusHidden ? 1 : 0)",
+            "plus_press=\(plusPressed ? 1 : 0)",
+            "column_count_stable=\(columnsAfter == columnsBefore ? 1 : 0)",
+            "tab_count_incremented=\(tabsAfter == tabsBefore + 1 ? 1 : 0)",
+            "tab_added_inside_focused_column=\(addedInsideFocusedColumn ? 1 : 0)",
+            "new_selected_tab_plus_visible=\(selectedPlusVisible ? 1 : 0)"
+        ].joined(separator: "\n") + "\n"
+        try? result.write(
+            toFile: outputPath,
+            atomically: true,
+            encoding: .utf8
+        )
+    }
+
     private func runFeatureProbeIfRequested() async {
         let environment = ProcessInfo.processInfo.environment
         guard let outputPath = environment["APEXTERM_UI_FEATURE_PROBE_FILE"],
@@ -3344,7 +3439,7 @@ struct RootView: View {
         Button("Focus Terminal") {
             model.selectSession(session.id)
         }
-        Button("Rename Pane…") {
+        Button("Rename Terminal Tab…") {
             beginRenameSession(session)
         }
         Divider()
@@ -3354,7 +3449,7 @@ struct RootView: View {
         Button("Split Down") {
             model.splitSession(id: session.id, axis: .horizontal)
         }
-        Button("Close Pane") {
+        Button("Close Terminal Tab") {
             model.closeSession(id: session.id)
         }
         if case .localTmux = session.kind {
@@ -3401,11 +3496,13 @@ struct RootView: View {
     }
 
     private func workspaceDetail(_ workspace: Workspace) -> String {
-        let paneCount = SplitTreeOperations.sessionIDs(in: workspace.layout).count
+        let tabCount = SplitTreeOperations.sessionIDs(in: workspace.layout).count
+        let columnCount = SplitTreeOperations.columnCount(in: workspace.layout)
+        let summary = "\(tabCount) tab\(tabCount == 1 ? "" : "s") · \(columnCount) column\(columnCount == 1 ? "" : "s")"
         if let root = workspace.rootDirectory {
-            return "\(URL(fileURLWithPath: root).lastPathComponent) · \(paneCount) pane\(paneCount == 1 ? "" : "s")"
+            return "\(URL(fileURLWithPath: root).lastPathComponent) · \(summary)"
         }
-        return "\(paneCount) pane\(paneCount == 1 ? "" : "s")"
+        return summary
     }
 
     private var sessionKindStatus: String {

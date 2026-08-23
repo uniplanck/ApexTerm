@@ -83,6 +83,45 @@ private enum NativePaneDragProbe {
     }
 }
 
+struct NativeTerminalTabProbe: NSViewRepresentable {
+    let sessionID: UUID
+
+    func makeNSView(context: Context) -> NativeTerminalTabProbeView {
+        let view = NativeTerminalTabProbeView()
+        view.sessionID = sessionID
+        return view
+    }
+
+    func updateNSView(_ nsView: NativeTerminalTabProbeView, context: Context) {
+        nsView.sessionID = sessionID
+        nsView.recordFrame()
+    }
+}
+
+@MainActor
+final class NativeTerminalTabProbeView: NSView {
+    var sessionID = UUID()
+    override var isFlipped: Bool { true }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+
+    override func layout() {
+        super.layout()
+        recordFrame()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        recordFrame()
+    }
+
+    func recordFrame() {
+        NativePaneDragProbe.recordHandle(self, sessionID: sessionID)
+    }
+}
+
 struct NativePaneDragHandle: NSViewRepresentable {
     let sessionID: UUID
     let title: String

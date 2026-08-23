@@ -60,8 +60,38 @@ public struct Workspace: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+public struct TerminalColumn: Codable, Equatable, Identifiable, Sendable {
+    public var id: UUID
+    public var sessionIDs: [UUID]
+    public var selectedSessionID: UUID
+
+    public init(
+        id: UUID = UUID(),
+        sessionIDs: [UUID],
+        selectedSessionID: UUID? = nil
+    ) {
+        var uniqueSessionIDs: [UUID] = []
+        uniqueSessionIDs.reserveCapacity(sessionIDs.count)
+        for sessionID in sessionIDs where !uniqueSessionIDs.contains(sessionID) {
+            uniqueSessionIDs.append(sessionID)
+        }
+        let fallback = uniqueSessionIDs.first ?? selectedSessionID ?? UUID()
+        self.id = id
+        self.sessionIDs = uniqueSessionIDs.isEmpty ? [fallback] : uniqueSessionIDs
+        self.selectedSessionID = self.sessionIDs.contains(selectedSessionID ?? fallback)
+            ? (selectedSessionID ?? fallback)
+            : self.sessionIDs[0]
+    }
+
+    public init(sessionID: UUID) {
+        self.init(sessionIDs: [sessionID], selectedSessionID: sessionID)
+    }
+}
+
 public indirect enum SplitNode: Codable, Equatable, Sendable {
+    /// Legacy schema-v1/v2 leaf. WorkspaceStore migrates these to `.column`.
     case pane(sessionID: UUID)
+    case column(TerminalColumn)
     case split(axis: SplitAxis, ratio: Double, first: SplitNode, second: SplitNode)
 
     public enum SplitAxis: String, Codable, Equatable, Sendable {
@@ -117,7 +147,7 @@ public enum SessionState: String, Codable, Equatable, Sendable {
 
 public struct WorkspaceDocument: Codable, Equatable, Sendable {
     public static let minimumSupportedSchemaVersion = 1
-    public static let currentSchemaVersion = 2
+    public static let currentSchemaVersion = 3
 
     public var schemaVersion: Int
     public var workspaces: [Workspace]

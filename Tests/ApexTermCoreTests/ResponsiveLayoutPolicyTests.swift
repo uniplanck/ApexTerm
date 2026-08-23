@@ -2,13 +2,14 @@ import ApexTermCore
 import XCTest
 
 final class ResponsiveLayoutPolicyTests: XCTestCase {
-    func testCompactWidthHidesBothSidePanels() {
+    func testCompactWidthHidesBothSidePanelsWithoutSwitchingToolbarMode() {
         let layout = ResponsiveLayoutPolicy(width: 320, agentRailPreferred: true)
 
         XCTAssertEqual(layout.mode, .compact)
         XCTAssertFalse(layout.showsWorkspaceSidebar)
         XCTAssertFalse(layout.showsAgentRail)
-        XCTAssertTrue(layout.usesCompactToolbar)
+        XCTAssertFalse(layout.usesCompactToolbar)
+        XCTAssertEqual(layout.mainToolbarControlCapacity, 2)
     }
 
     func testBalancedWidthPreservesTerminalByHidingAgentRail() {
@@ -17,7 +18,23 @@ final class ResponsiveLayoutPolicyTests: XCTestCase {
         XCTAssertEqual(layout.mode, .balanced)
         XCTAssertTrue(layout.showsWorkspaceSidebar)
         XCTAssertFalse(layout.showsAgentRail)
-        XCTAssertTrue(layout.usesCompactToolbar)
+        XCTAssertFalse(layout.usesCompactToolbar)
+        XCTAssertEqual(layout.mainToolbarControlCapacity, Int.max)
+    }
+
+    func testToolbarCapacityGrowsProgressivelyWithWidth() {
+        XCTAssertEqual(
+            ResponsiveLayoutPolicy(width: 620, agentRailPreferred: false).mainToolbarControlCapacity,
+            4
+        )
+        XCTAssertEqual(
+            ResponsiveLayoutPolicy(width: 780, agentRailPreferred: false).mainToolbarControlCapacity,
+            7
+        )
+        XCTAssertEqual(
+            ResponsiveLayoutPolicy(width: 920, agentRailPreferred: false).mainToolbarControlCapacity,
+            11
+        )
     }
 
     func testWideWidthHonorsAgentRailPreference() {
@@ -27,12 +44,15 @@ final class ResponsiveLayoutPolicyTests: XCTestCase {
         XCTAssertFalse(
             ResponsiveLayoutPolicy(width: 1_280, agentRailPreferred: false).showsAgentRail
         )
+        XCTAssertEqual(
+            ResponsiveLayoutPolicy(width: 1_280, agentRailPreferred: true).mainToolbarControlCapacity,
+            Int.max
+        )
     }
 
     func testNegativeWidthIsHandledAsCompact() {
-        XCTAssertEqual(
-            ResponsiveLayoutPolicy(width: -10, agentRailPreferred: true).mode,
-            .compact
-        )
+        let layout = ResponsiveLayoutPolicy(width: -10, agentRailPreferred: true)
+        XCTAssertEqual(layout.mode, .compact)
+        XCTAssertEqual(layout.mainToolbarControlCapacity, 2)
     }
 }

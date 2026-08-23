@@ -1292,7 +1292,7 @@ final class AppModel: ObservableObject {
         let workspace = Workspace(
             name: "Workspace \(workspaces.count + 1)",
             rootDirectory: session.workingDirectory,
-            layout: .pane(sessionID: session.id)
+            layout: .column(TerminalColumn(sessionID: session.id))
         )
         sessions.append(session)
         workspaces.append(workspace)
@@ -1391,7 +1391,7 @@ final class AppModel: ObservableObject {
             let workspace = Workspace(
                 name: title,
                 rootDirectory: directory.path,
-                layout: .pane(sessionID: session.id)
+                layout: .column(TerminalColumn(sessionID: session.id))
             )
             sessions.append(session)
             workspaces.append(workspace)
@@ -1444,7 +1444,7 @@ final class AppModel: ObservableObject {
         let workspace = Workspace(
             name: normalized,
             rootDirectory: session.workingDirectory,
-            layout: .pane(sessionID: session.id)
+            layout: .column(TerminalColumn(sessionID: session.id))
         )
         sessions.append(session)
         workspaces.append(workspace)
@@ -1826,121 +1826,174 @@ final class AppModel: ObservableObject {
               let sourceWorkspaceID = workspaces.first(where: {
                   SplitTreeOperations.contains(sessionID: sourceSessionID, in: $0.layout)
               })?.id,
-              workspaces.contains(where: { workspace in
+              let targetWorkspace = workspaces.first(where: { workspace in
                   workspace.id == targetWorkspaceID
                       && SplitTreeOperations.contains(sessionID: targetSessionID, in: workspace.layout)
               }) else {
             return
         }
 
+        let targetLayout: SplitNode
         if region == .center {
             if sourceWorkspaceID == targetWorkspaceID {
-                guard let index = workspaces.firstIndex(where: { $0.id == targetWorkspaceID }) else { return }
-                workspaces[index].layout = SplitTreeOperations.swappingSessions(
+                targetLayout = SplitTreeOperations.movingSessionToColumnEnd(
                     sourceSessionID,
-                    targetSessionID,
-                    in: workspaces[index].layout
+                    targetSessionID: targetSessionID,
+                    in: targetWorkspace.layout
                 )
-                workspaces[index].updatedAt = Date()
             } else {
-                guard let sourceIndex = workspaces.firstIndex(where: { $0.id == sourceWorkspaceID }),
-                      let targetIndex = workspaces.firstIndex(where: { $0.id == targetWorkspaceID }) else {
+                targetLayout = SplitTreeOperations.addingSession(
+                    sourceSessionID,
+                    toColumnContaining: targetSessionID,
+                    select: true,
+                    in: targetWorkspace.layout
+                )
+            }
+        } else {
+            let axis: SplitNode.SplitAxis
+            let newColumnFirst: Bool
+            switch region {
+            case .left:
+                axis = .vertical
+                newColumnFirst = true
+            case .right:
+                axis = .vertical
+                newColumnFirst = false
+            case .top:
+                axis = .horizontal
+                newColumnFirst = true
+            case .bottom:
+                axis = .horizontal
+                newColumnFirst = false
+            case .center:
+                return
+            }
+
+            let baseLayout: SplitNode
+            if sourceWorkspaceID == targetWorkspaceID {
+                guard let reduced = SplitTreeOperations.removing(
+                    sessionID: sourceSessionID,
+                    from: targetWorkspace.layout
+                ), SplitTreeOperations.contains(sessionID: targetSessionID, in: reduced) else {
                     return
                 }
-                workspaces[sourceIndex].layout = SplitTreeOperations.replacing(
-                    sessionID: sourceSessionID,
-                    with: targetSessionID,
-                    in: workspaces[sourceIndex].layout
-                )
-                workspaces[targetIndex].layout = SplitTreeOperations.replacing(
-                    sessionID: targetSessionID,
-                    with: sourceSessionID,
-                    in: workspaces[targetIndex].layout
-                )
-                workspaces[sourceIndex].updatedAt = Date()
+                baseLayout = reduced
+            } else {
+                baseLayout = targetWorkspace.layout
+            }
+
+            let previousColumnCount = SplitTreeOperations.columnCount(in: baseLayout)
+            targetLayout = SplitTreeOperations.inserting(
+                subtree: .column(TerminalColumn(sessionID: sourceSessionID)),
+                at: targetSessionID,
+                axis: axis,
+                newPaneFirst: newColumnFirst,
+                in: baseLayout
+            )
+            guard SplitTreeOperations.columnCount(in: targetLayout) == previousColumnCount + 1 else {
+                persistenceMessage = "Workspace column limit reached"
+                return
+            }
+        }
+
+        guard SplitTreeOperations.contains(sessionID: sourceSessionID, in: targetLayout) else {
+            return
+        }
+
+        if sourceWorkspaceID != targetWorkspaceID {
+            guard let sourceWorkspace = workspaces.first(where: { $0.id == sourceWorkspaceID }) else {
+                return
+            }
+            let reducedSourceLayout = SplitTreeOperations.removing(
+                sessionID: sourceSessionID,
+                from: sourceWorkspace.layout
+            )
+
+            if let targetIndex = workspaces.firstIndex(where: { $0.id == targetWorkspaceID }) {
+                workspaces[targetIndex].layout = targetLayout
                 workspaces[targetIndex].updatedAt = Date()
             }
-            selectedWorkspaceID = targetWorkspaceID
-            selectedSessionID = sourceSessionID
-            persistenceMessage = "Pane frames swapped"
-            commitState()
-            return
-        }
-
-        let axis: SplitNode.SplitAxis
-        let newPaneFirst: Bool
-        switch region {
-        case .left:
-            axis = .vertical
-            newPaneFirst = true
-        case .right:
-            axis = .vertical
-            newPaneFirst = false
-        case .top:
-            axis = .horizontal
-            newPaneFirst = true
-        case .bottom:
-            axis = .horizontal
-            newPaneFirst = false
-        case .center:
-            return
-        }
-
-        if sourceWorkspaceID == targetWorkspaceID {
-            guard let index = workspaces.firstIndex(where: { $0.id == targetWorkspaceID }),
-                  let reducedLayout = SplitTreeOperations.removing(
-                    sessionID: sourceSessionID,
-                    from: workspaces[index].layout
-                  ),
-                  SplitTreeOperations.contains(sessionID: targetSessionID, in: reducedLayout) else {
-                return
+            if let sourceIndex = workspaces.firstIndex(where: { $0.id == sourceWorkspaceID }) {
+                if let reducedSourceLayout {
+                    workspaces[sourceIndex].layout = reducedSourceLayout
+                    workspaces[sourceIndex].updatedAt = Date()
+                } else {
+                    workspaces.remove(at: sourceIndex)
+                }
             }
-            let movedLayout = SplitTreeOperations.inserting(
-                subtree: .pane(sessionID: sourceSessionID),
-                at: targetSessionID,
-                axis: axis,
-                newPaneFirst: newPaneFirst,
-                in: reducedLayout
-            )
-            guard SplitTreeOperations.contains(sessionID: sourceSessionID, in: movedLayout) else { return }
-            workspaces[index].layout = movedLayout
-            workspaces[index].updatedAt = Date()
-        } else {
-            guard let sourceIndex = workspaces.firstIndex(where: { $0.id == sourceWorkspaceID }),
-                  let targetIndex = workspaces.firstIndex(where: { $0.id == targetWorkspaceID }) else {
-                return
-            }
-            let targetLayout = workspaces[targetIndex].layout
-            let movedTargetLayout = SplitTreeOperations.inserting(
-                subtree: .pane(sessionID: sourceSessionID),
-                at: targetSessionID,
-                axis: axis,
-                newPaneFirst: newPaneFirst,
-                in: targetLayout
-            )
-            guard SplitTreeOperations.paneCount(in: movedTargetLayout)
-                    == SplitTreeOperations.paneCount(in: targetLayout) + 1 else {
-                persistenceMessage = "Workspace pane limit reached"
-                return
-            }
-            workspaces[targetIndex].layout = movedTargetLayout
+        } else if let targetIndex = workspaces.firstIndex(where: { $0.id == targetWorkspaceID }) {
+            workspaces[targetIndex].layout = targetLayout
             workspaces[targetIndex].updatedAt = Date()
-
-            let sourcePaneCount = SplitTreeOperations.paneCount(in: workspaces[sourceIndex].layout)
-            if sourcePaneCount == 1 {
-                workspaces.remove(at: sourceIndex)
-            } else if let reducedSourceLayout = SplitTreeOperations.removing(
-                sessionID: sourceSessionID,
-                from: workspaces[sourceIndex].layout
-            ) {
-                workspaces[sourceIndex].layout = reducedSourceLayout
-                workspaces[sourceIndex].updatedAt = Date()
-            }
         }
 
         selectedWorkspaceID = targetWorkspaceID
         selectedSessionID = sourceSessionID
-        persistenceMessage = "Pane moved"
+        persistenceMessage = region == .center ? "Tab moved to column" : "Tab moved to new column"
+        commitState()
+    }
+
+    func reorderTerminalTab(
+        sourceSessionID: UUID,
+        relativeTo targetSessionID: UUID,
+        after: Bool
+    ) {
+        guard sourceSessionID != targetSessionID,
+              let workspaceIndex = workspaces.firstIndex(where: {
+                  SplitTreeOperations.contains(sessionID: sourceSessionID, in: $0.layout)
+                      && SplitTreeOperations.contains(sessionID: targetSessionID, in: $0.layout)
+              }) else {
+            return
+        }
+        let updated = SplitTreeOperations.movingSession(
+            sourceSessionID,
+            relativeTo: targetSessionID,
+            after: after,
+            in: workspaces[workspaceIndex].layout
+        )
+        guard updated != workspaces[workspaceIndex].layout else { return }
+        workspaces[workspaceIndex].layout = updated
+        workspaces[workspaceIndex].updatedAt = Date()
+        selectedWorkspaceID = workspaces[workspaceIndex].id
+        selectedSessionID = sourceSessionID
+        commitState()
+    }
+
+    func addTerminalTab(toColumnContaining anchorSessionID: UUID? = nil) {
+        guard let anchorSessionID = anchorSessionID ?? selectedSessionID,
+              let workspaceIndex = workspaces.firstIndex(where: {
+                  SplitTreeOperations.contains(sessionID: anchorSessionID, in: $0.layout)
+              }) else {
+            return
+        }
+
+        let source = session(id: anchorSessionID)
+        let kind = source?.kind ?? .local
+        let title: String
+        if kind == .local {
+            _ = normalizeLocalShellTitles(inWorkspaceAt: workspaceIndex)
+            title = nextLocalShellTitle(inWorkspaceAt: workspaceIndex)
+        } else {
+            title = source?.title ?? "Terminal"
+        }
+        let newSession = TerminalSession(
+            title: title,
+            kind: kind,
+            workingDirectory: source?.workingDirectory
+        )
+        let updated = SplitTreeOperations.addingSession(
+            newSession.id,
+            toColumnContaining: anchorSessionID,
+            select: true,
+            in: workspaces[workspaceIndex].layout
+        )
+        guard SplitTreeOperations.contains(sessionID: newSession.id, in: updated) else {
+            return
+        }
+        workspaces[workspaceIndex].layout = updated
+        workspaces[workspaceIndex].updatedAt = Date()
+        sessions.append(newSession)
+        selectedWorkspaceID = workspaces[workspaceIndex].id
+        selectedSessionID = newSession.id
         commitState()
     }
 
@@ -1971,7 +2024,7 @@ final class AppModel: ObservableObject {
             first: newPaneFirst ? sourceLayout : targetLayout,
             second: newPaneFirst ? targetLayout : sourceLayout
         )
-        let movedSessionID = SplitTreeOperations.sessionIDs(in: sourceLayout).first
+        let movedSessionID = SplitTreeOperations.firstSelectedSessionID(in: sourceLayout)
         workspaces[targetIndex].layout = mergedLayout
         workspaces[targetIndex].updatedAt = Date()
         workspaces.remove(at: sourceIndex)
@@ -1995,8 +2048,9 @@ final class AppModel: ObservableObject {
             return
         }
         let sourceLayout = workspaces[sourceIndex].layout
-        let sourceIDs = SplitTreeOperations.sessionIDs(in: sourceLayout)
-        guard let movedSessionID = sourceIDs.first else { return }
+        guard let movedSessionID = SplitTreeOperations.firstSelectedSessionID(in: sourceLayout) else {
+            return
+        }
         let targetSessionID: UUID
         if let explicitTargetSessionID,
            SplitTreeOperations.contains(
@@ -2063,7 +2117,7 @@ final class AppModel: ObservableObject {
         )
         let workspace = Workspace(
             name: profile.displayTitle,
-            layout: .pane(sessionID: session.id)
+            layout: .column(TerminalColumn(sessionID: session.id))
         )
         sessions.append(session)
         workspaces.append(workspace)
@@ -2143,7 +2197,13 @@ final class AppModel: ObservableObject {
     }
 
     func selectWorkspace(_ workspace: Workspace) {
-        let sessionID = SplitTreeOperations.sessionIDs(in: workspace.layout).first
+        let sessionID: UUID?
+        if let selectedSessionID,
+           SplitTreeOperations.contains(sessionID: selectedSessionID, in: workspace.layout) {
+            sessionID = selectedSessionID
+        } else {
+            sessionID = SplitTreeOperations.firstSelectedSessionID(in: workspace.layout)
+        }
         if selectedAgentChatID != nil {
             selectedAgentChatID = nil
         }
@@ -2157,7 +2217,22 @@ final class AppModel: ObservableObject {
     }
 
     func selectSession(_ sessionID: UUID) {
+        guard sessions.contains(where: { $0.id == sessionID }) else { return }
         selectedSessionID = sessionID
+        if let workspaceIndex = workspaces.firstIndex(where: {
+            SplitTreeOperations.contains(sessionID: sessionID, in: $0.layout)
+        }) {
+            selectedWorkspaceID = workspaces[workspaceIndex].id
+            let updated = SplitTreeOperations.selectingSession(
+                sessionID,
+                in: workspaces[workspaceIndex].layout
+            )
+            if updated != workspaces[workspaceIndex].layout {
+                workspaces[workspaceIndex].layout = updated
+                workspaces[workspaceIndex].updatedAt = Date()
+                scheduleMetadataPersist()
+            }
+        }
         refreshAutomationSelection()
         TerminalPaneRuntimeStore.shared.requestFocus(sessionID: sessionID)
     }
@@ -2254,6 +2329,10 @@ final class AppModel: ObservableObject {
             return
         }
         let existingIDs = SplitTreeOperations.sessionIDs(in: workspaces[workspaceIndex].layout)
+        let sourceColumnID = SplitTreeOperations.column(
+            containing: selectedSessionID,
+            in: workspaces[workspaceIndex].layout
+        )?.id
         guard existingIDs.count > 1,
               let newLayout = SplitTreeOperations.removing(
                 sessionID: selectedSessionID,
@@ -2265,7 +2344,12 @@ final class AppModel: ObservableObject {
         workspaces[workspaceIndex].layout = newLayout
         workspaces[workspaceIndex].updatedAt = Date()
         sessions.removeAll { $0.id == selectedSessionID }
-        self.selectedSessionID = SplitTreeOperations.sessionIDs(in: newLayout).first
+        if let sourceColumnID,
+           let survivingColumn = SplitTreeOperations.column(id: sourceColumnID, in: newLayout) {
+            self.selectedSessionID = survivingColumn.selectedSessionID
+        } else {
+            self.selectedSessionID = SplitTreeOperations.sessionIDs(in: newLayout).first
+        }
         commitState()
     }
 
@@ -3159,7 +3243,7 @@ final class AppModel: ObservableObject {
         let workspace = Workspace(
             name: "Main",
             rootDirectory: session.workingDirectory,
-            layout: .pane(sessionID: session.id)
+            layout: .column(TerminalColumn(sessionID: session.id))
         )
         return WorkspaceDocument(
             workspaces: [workspace],

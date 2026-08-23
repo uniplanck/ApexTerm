@@ -27,7 +27,7 @@ final class WorkspaceStoreTests: XCTestCase {
         let workspace = Workspace(
             name: "Project",
             rootDirectory: "/tmp/project",
-            layout: .pane(sessionID: session.id),
+            layout: .column(TerminalColumn(sessionID: session.id)),
             context: WorkspaceContext(
                 repositories: [repository],
                 launchConfigurations: [launchConfiguration],
@@ -59,6 +59,42 @@ final class WorkspaceStoreTests: XCTestCase {
         let attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
         let permissions = attributes[.posixPermissions] as? NSNumber
         XCTAssertEqual(permissions?.intValue, 0o600)
+    }
+
+    func testSchemaV2MigratesPaneLeavesIntoTerminalColumns() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let fileURL = directory.appendingPathComponent("workspaces.json")
+        let store = WorkspaceStore(fileURL: fileURL)
+
+        let first = TerminalSession(title: "One")
+        let second = TerminalSession(title: "Two")
+        let legacyDocument = WorkspaceDocument(
+            schemaVersion: 2,
+            workspaces: [
+                Workspace(
+                    name: "Legacy Split",
+                    layout: .split(
+                        axis: .vertical,
+                        ratio: 0.4,
+                        first: .pane(sessionID: first.id),
+                        second: .pane(sessionID: second.id)
+                    )
+                )
+            ],
+            sessions: [first, second]
+        )
+        try await store.save(legacyDocument)
+
+        let result = try await store.loadResult()
+
+        XCTAssertEqual(result.migratedFromSchemaVersion, 2)
+        XCTAssertEqual(result.document.schemaVersion, 3)
+        let layout = try XCTUnwrap(result.document.workspaces.first?.layout)
+        XCTAssertEqual(SplitTreeOperations.columnCount(in: layout), 2)
+        XCTAssertEqual(SplitTreeOperations.sessionIDs(in: layout), [first.id, second.id])
+        XCTAssertNotNil(SplitTreeOperations.column(containing: first.id, in: layout))
+        XCTAssertNotNil(SplitTreeOperations.column(containing: second.id, in: layout))
     }
 
     func testSchemaV1MigratesRootDirectoryIntoPrimaryRepository() async throws {
