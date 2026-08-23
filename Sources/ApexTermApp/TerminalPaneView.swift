@@ -119,6 +119,11 @@ struct TerminalPaneView: NSViewRepresentable {
     ) {
         let terminal = container.terminal
         terminal.processDelegate = coordinator
+        if case .local = session.kind {
+            terminal.setLocalControlCRecoveryEnabled(true)
+        } else {
+            terminal.setLocalControlCRecoveryEnabled(false)
+        }
         terminal.commandBlocksEnabled = session.commandBlocksEnabled
         terminal.smartPasteProtectionEnabled = session.smartPasteProtectionEnabled
         terminal.multilinePasteConfirmationEnabled = session.multilinePasteConfirmationEnabled
@@ -500,6 +505,10 @@ final class TerminalPaneRuntimeStore {
         containers[sessionID]
     }
 
+    func requestFocus(sessionID: UUID) {
+        containers[sessionID]?.terminal.requestFocusWhenReady()
+    }
+
     func isProcessRunning(sessionID: UUID) -> Bool {
         containers[sessionID]?.terminal.process.running == true
     }
@@ -621,6 +630,7 @@ final class ApexTerminalContainerView: NSView {
     private var promptDecorations: [PromptDecoration] = []
     private var selectedDecoration: PromptDecoration?
     private var scrollMonitor: Any?
+    private var keyMonitor: Any?
     private var visibilityObservers: [NSObjectProtocol] = []
     private let promptProbePath = ProcessInfo.processInfo.environment[
         "APEXTERM_PROMPT_DECORATION_PROBE_FILE"
@@ -669,6 +679,7 @@ final class ApexTerminalContainerView: NSView {
 
     func prepareForPresentation() {
         installScrollMonitor()
+        installKeyMonitor()
         installVisibilityObservers()
         needsLayout = true
         layoutSubtreeIfNeeded()
@@ -689,6 +700,7 @@ final class ApexTerminalContainerView: NSView {
     func prepareForDetachment() {
         terminal.cancelPendingFocusRequest()
         removeScrollMonitor()
+        removeKeyMonitor()
         removeVisibilityObservers()
     }
 
@@ -779,6 +791,27 @@ final class ApexTerminalContainerView: NSView {
         }
     }
 
+    private func installKeyMonitor() {
+        removeKeyMonitor()
+        guard window != nil else { return }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self,
+                  event.window === window,
+                  window?.firstResponder === terminal else {
+                return event
+            }
+            terminal.handleApexKeyDown(event)
+            return event
+        }
+    }
+
+    private func removeKeyMonitor() {
+        if let keyMonitor {
+            NSEvent.removeMonitor(keyMonitor)
+            self.keyMonitor = nil
+        }
+    }
+
     private func installVisibilityObservers() {
         removeVisibilityObservers()
         let center = NotificationCenter.default
@@ -819,6 +852,7 @@ final class ApexTerminalContainerView: NSView {
     func invalidate() {
         terminal.cancelPendingFocusRequest()
         removeScrollMonitor()
+        removeKeyMonitor()
         terminal.onPromptStarted = nil
         terminal.onTerminalRowsShifted = nil
         removeAllPromptDecorations()
@@ -1064,6 +1098,10 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
     private var scrollProbeFile: String?
     private var scrollProbeMarker: String?
     private var focusTask: Task<Void, Never>?
+    private var controlCRecoveryTask: Task<Void, Never>?
+    private var controlCRecoveryArmedUntil: Date?
+    private var lastControlCAt: Date?
+    private var localControlCRecoveryEnabled = false
     private var commandSessionID: UUID?
     private var streamParser = ShellIntegrationStreamParser()
     private var trustFilter = TerminalEscapeSequenceTrustFilter(policy: .localDefault)
@@ -1179,6 +1217,7 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
     }
 
     func prepareForProcessStart(trustPolicy: TerminalEscapeSequenceTrustPolicy) {
+        cancelControlCRecovery()
         trustFilter.policy = trustPolicy
         trustFilter.resetStreamState()
         inlineImageFilter.resetStreamState()
@@ -1192,6 +1231,7 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
     func terminateSession(scope: TerminalProcessTerminationScope) {
         setProgrammaticInputEnabled(false)
         cancelPendingFocusRequest()
+        cancelControlCRecovery()
         trustFilter.resetStreamState()
         inlineImageFilter.resetStreamState()
         kittyGraphicsFilter.resetStreamState()
@@ -1268,6 +1308,12 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
         cancelPendingFocusRequest()
         window?.makeFirstResponder(self)
         super.mouseDown(with: event)
+    }
+
+    func handleApexKeyDown(_ event: NSEvent) {
+        if localControlCRecoveryEnabled, isControlC(event) {
+            armControlCRecovery()
+        }
     }
 
     override func rightMouseDown(with event: NSEvent) {
@@ -1455,6 +1501,7 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
         let trustedSlice = sixelFiltered[...]
 
         onHostData?(trustedSlice)
+        inspectControlCEcho(trustedSlice)
         inspectInputProbe(trustedSlice)
         inspectProgrammaticInputProbe(trustedSlice)
 
@@ -1494,6 +1541,7 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
     func handleSemanticEvent(_ event: ShellSemanticEvent) {
         switch event {
         case .promptStarted:
+            cancelControlCRecovery()
             clearResidualKittyKeyboardModeAtPrompt()
         case .commandInputStarted:
             onPromptStarted?(terminal.buffer.y)
@@ -1519,6 +1567,69 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
         // Pop beyond SwiftTerm's 16-entry stack limit at a fresh shell prompt so
         // Control-C returns to the legacy 0x03 byte expected by the PTY line discipline.
         terminal.feed(text: "\u{001B}[<17u")
+    }
+
+    func setLocalControlCRecoveryEnabled(_ enabled: Bool) {
+        localControlCRecoveryEnabled = enabled
+        if !enabled {
+            cancelControlCRecovery()
+        }
+    }
+
+    private func isControlC(_ event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard modifiers.contains(.control),
+              !modifiers.contains(.command),
+              !modifiers.contains(.option) else {
+            return false
+        }
+        return event.charactersIgnoringModifiers?.lowercased() == "c"
+    }
+
+    private func armControlCRecovery() {
+        let now = Date()
+        let repeated = lastControlCAt.map { now.timeIntervalSince($0) < 1.5 } ?? false
+        lastControlCAt = now
+        controlCRecoveryArmedUntil = now.addingTimeInterval(1.5)
+        controlCRecoveryTask?.cancel()
+        controlCRecoveryTask = nil
+
+        // Always arm a bounded fallback. A healthy PTY releases the foreground job
+        // before this fires, making the fallback a no-op; raw modes that suppress ^C
+        // output still recover without requiring the user to press Control-C twice.
+        scheduleControlCRecovery(after: repeated ? .milliseconds(120) : .milliseconds(250))
+    }
+
+    private func inspectControlCEcho(_ bytes: ArraySlice<UInt8>) {
+        guard localControlCRecoveryEnabled,
+              let armedUntil = controlCRecoveryArmedUntil,
+              Date() <= armedUntil,
+              String(decoding: bytes, as: UTF8.self).contains("^C") else {
+            return
+        }
+        scheduleControlCRecovery(after: .milliseconds(250))
+    }
+
+    private func scheduleControlCRecovery(after delay: Duration) {
+        controlCRecoveryTask?.cancel()
+        controlCRecoveryTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled, let self else { return }
+            defer { cancelControlCRecovery() }
+            guard localControlCRecoveryEnabled,
+                  process.running,
+                  !terminal.isCurrentBufferAlternate,
+                  let processSession = LocalTerminalProcessSession(rootPID: process.shellPid) else {
+                return
+            }
+            _ = processSession.signalForegroundJob(SIGINT)
+        }
+    }
+
+    private func cancelControlCRecovery() {
+        controlCRecoveryTask?.cancel()
+        controlCRecoveryTask = nil
+        controlCRecoveryArmedUntil = nil
     }
 
     private func appendCapturedOutput(_ bytes: ArraySlice<UInt8>) {

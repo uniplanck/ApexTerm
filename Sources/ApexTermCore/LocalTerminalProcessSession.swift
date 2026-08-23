@@ -7,6 +7,8 @@ import Darwin
 public struct LocalTerminalProcessSession: Sendable {
     public let sessionID: pid_t
 
+    private let rootPID: pid_t
+    private let rootProcessGroup: pid_t
     private let excludedSessionID: pid_t
     private let excludedProcessGroup: pid_t
 
@@ -16,9 +18,48 @@ public struct LocalTerminalProcessSession: Sendable {
         let ownSessionID = Darwin.getsid(0)
         guard sessionID > 0, sessionID != ownSessionID else { return nil }
 
+        let rootProcessGroup = Darwin.getpgid(rootPID)
+        guard rootProcessGroup > 0 else { return nil }
+
         self.sessionID = sessionID
+        self.rootPID = rootPID
+        self.rootProcessGroup = rootProcessGroup
         self.excludedSessionID = ownSessionID
         self.excludedProcessGroup = Darwin.getpgrp()
+    }
+
+    /// Returns the process group that currently owns the PTY foreground, but only
+    /// when it is a job group distinct from the interactive root shell.
+    public func foregroundJobProcessGroup() -> pid_t? {
+        var info = proc_bsdinfo()
+        let size = MemoryLayout<proc_bsdinfo>.stride
+        let copied = withUnsafeMutablePointer(to: &info) { pointer in
+            Darwin.proc_pidinfo(
+                rootPID,
+                PROC_PIDTBSDINFO,
+                0,
+                UnsafeMutableRawPointer(pointer),
+                Int32(size)
+            )
+        }
+        guard copied == Int32(size) else { return nil }
+
+        let group = pid_t(bitPattern: info.e_tpgid)
+        guard group > 0,
+              group != rootProcessGroup,
+              currentProcessGroups().contains(group) else {
+            return nil
+        }
+        return group
+    }
+
+    /// Sends a signal only to the live foreground job. The interactive root shell
+    /// is deliberately excluded so recovery can never turn Control-C into a pane exit.
+    @discardableResult
+    public func signalForegroundJob(_ signal: Int32) -> pid_t? {
+        guard let group = foregroundJobProcessGroup() else { return nil }
+        guard Darwin.kill(-group, signal) == 0 else { return nil }
+        return group
     }
 
     /// Sends a signal to all currently live process groups in the PTY session.

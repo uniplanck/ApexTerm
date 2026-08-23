@@ -195,6 +195,58 @@ final class PTYRoundTripTests: XCTestCase {
     }
 
     @MainActor
+    func testControlCRecoversInteractiveShellWhenPTYISIGWasDisabled() async throws {
+        let terminal = ApexLocalProcessTerminalView(
+            frame: CGRect(x: 0, y: 0, width: 640, height: 480)
+        )
+        terminal.setLocalControlCRecoveryEnabled(true)
+        var output = ""
+        terminal.onHostData = { bytes in
+            output += String(decoding: bytes, as: UTF8.self)
+        }
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["-df"],
+            environment: Terminal.getEnvironmentVariables(termName: "xterm-256color")
+        )
+        defer {
+            if terminal.process.running {
+                terminal.terminateSession(scope: .processGroup)
+            }
+        }
+        try await Task.sleep(for: .milliseconds(100))
+
+        terminal.send(
+            source: terminal,
+            data: Array("stty -isig; sleep 30\n".utf8)[...]
+        )
+        let foregroundStarted = await waitUntilAsync(timeout: 2) {
+            LocalTerminalProcessSession(rootPID: terminal.process.shellPid)?
+                .foregroundJobProcessGroup() != nil
+        }
+        XCTAssertTrue(foregroundStarted)
+
+        let controlC = try controlKeyEvent(character: "c", keyCode: 8)
+        terminal.handleApexKeyDown(controlC)
+        terminal.keyDown(with: controlC)
+
+        let foregroundReleased = await waitUntilAsync(timeout: 3) {
+            LocalTerminalProcessSession(rootPID: terminal.process.shellPid)?
+                .foregroundJobProcessGroup() == nil
+        }
+        XCTAssertTrue(foregroundReleased, "foreground job did not release the PTY")
+        terminal.send(
+            source: terminal,
+            data: Array("printf '__CTRL_C_SHELL_RECOVERED__\\n'; stty isig\n".utf8)[...]
+        )
+        let shellRecovered = await waitUntilAsync(timeout: 3) {
+            output.contains("__CTRL_C_SHELL_RECOVERED__")
+        }
+        XCTAssertTrue(shellRecovered, "output=\(output)")
+        XCTAssertTrue(terminal.process.running)
+    }
+
+    @MainActor
     func testRemoteTrustPolicyBlocksOSC52ClipboardAccess() {
         let pasteboard = NSPasteboard.general
         let original = pasteboard.string(forType: .string)
@@ -542,6 +594,19 @@ final class PTYRoundTripTests: XCTestCase {
                 keyCode: keyCode
             )
         )
+    }
+
+    @MainActor
+    private func waitUntilAsync(
+        timeout: TimeInterval,
+        condition: () -> Bool
+    ) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return true }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        return condition()
     }
 
     private func waitUntil(

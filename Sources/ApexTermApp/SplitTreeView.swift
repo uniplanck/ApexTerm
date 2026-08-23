@@ -82,6 +82,7 @@ struct SplitTreeView: View {
                 splitView(axis: axis, ratio: ratio, first: first, second: second)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .alert(
             "Rename Pane",
             isPresented: Binding(

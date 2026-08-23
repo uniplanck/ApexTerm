@@ -2159,6 +2159,7 @@ final class AppModel: ObservableObject {
     func selectSession(_ sessionID: UUID) {
         selectedSessionID = sessionID
         refreshAutomationSelection()
+        TerminalPaneRuntimeStore.shared.requestFocus(sessionID: sessionID)
     }
 
     func splitSession(id: UUID, axis: SplitNode.SplitAxis) {
@@ -3029,10 +3030,10 @@ final class AppModel: ObservableObject {
             break
         case let .focusSession(sessionID):
             guard sessions.contains(where: { $0.id == sessionID }) else { return }
-            selectedSessionID = sessionID
             selectedWorkspaceID = workspaces.first {
                 SplitTreeOperations.contains(sessionID: sessionID, in: $0.layout)
             }?.id
+            selectSession(sessionID)
             refreshAutomationStatus()
         case let .openWorkspace(workspaceID):
             guard let workspace = workspaces.first(where: { $0.id == workspaceID }) else {
