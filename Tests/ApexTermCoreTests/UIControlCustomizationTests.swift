@@ -6,6 +6,8 @@ final class UIControlCustomizationTests: XCTestCase {
         let customization = UIControlCustomization()
         XCTAssertEqual(Set(customization.mainToolbarOrder), Set(UIControlID.controls(in: .mainToolbar)))
         XCTAssertEqual(customization.mainToolbarOrder.count, UIControlID.controls(in: .mainToolbar).count)
+        XCTAssertEqual(customization.topBarOrder, UIControlCustomization.defaultTopBarOrder)
+        XCTAssertTrue(customization.topBarOrder.allSatisfy(\.isTopBarReorderable))
         XCTAssertTrue(UIControlID.allCases.allSatisfy(customization.isVisible))
     }
 
@@ -52,6 +54,27 @@ final class UIControlCustomizationTests: XCTestCase {
         customization.moveMainToolbarControl(.toggleRightSidebar, before: .commandPalette)
         XCTAssertEqual(customization.mainToolbarOrder[1], .toggleRightSidebar)
         XCTAssertEqual(customization.mainToolbarOrder[2], .commandPalette)
+    }
+
+    func testTopBarCanReorderAcrossFormerTabAndToolbarGroups() {
+        var customization = UIControlCustomization()
+        customization.moveTopBarControl(.newTab, relativeTo: .commandPalette, after: true)
+        guard let commandIndex = customization.topBarOrder.firstIndex(of: .commandPalette),
+              let newTabIndex = customization.topBarOrder.firstIndex(of: .newTab) else {
+            return XCTFail("Expected top bar controls in normalized order")
+        }
+        XCTAssertEqual(newTabIndex, commandIndex + 1)
+    }
+
+    func testTopBarResetRestoresOrderAndVisibility() {
+        var customization = UIControlCustomization()
+        customization.moveTopBarControl(.newTab, relativeTo: .maximizePane, after: true)
+        customization.setVisible(false, for: .remoteHostLaunch)
+
+        customization.resetTopBar()
+
+        XCTAssertEqual(customization.topBarOrder, UIControlCustomization.defaultTopBarOrder)
+        XCTAssertTrue(customization.isVisible(.remoteHostLaunch))
     }
 
     func testResetRestoresToolbarOrderAndVisibilityOnlyForToolbar() {

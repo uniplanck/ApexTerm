@@ -1,6 +1,7 @@
 import ApexTermCore
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 @MainActor
 private final class TransientNoticePresentationProbe {
@@ -24,6 +25,29 @@ private enum WorkspaceSidebarPlacement: String {
     case right
 }
 
+private let mainToolbarControlUTType = UTType(exportedAs: "com.uniplanck.apexterm.main-toolbar-control")
+
+private struct MainToolbarReorderDropDelegate: DropDelegate {
+    let targetControl: UIControlID
+    @Binding var draggedControl: UIControlID?
+    let move: (UIControlID, UIControlID, Bool) -> Void
+
+    func dropEntered(info: DropInfo) {
+        guard let draggedControl, draggedControl != targetControl else { return }
+        move(draggedControl, targetControl, info.location.x > 12)
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        guard draggedControl != nil else { return false }
+        draggedControl = nil
+        return true
+    }
+}
+
 struct RootView: View {
     @ObservedObject var model: AppModel
     @Environment(\.openWindow) private var openWindow
@@ -41,6 +65,7 @@ struct RootView: View {
     @State private var isNamedTmuxPresented = false
     @State private var expandedWorkspaceIDs: Set<UUID> = []
     @State private var expandedRemoteHostAliases: Set<String> = []
+    @State private var draggedMainToolbarControl: UIControlID?
     @AppStorage("apexterm.sidebar.workspacePlacement") private var workspaceSidebarPlacementRaw = WorkspaceSidebarPlacement.left.rawValue
 
     var body: some View {
@@ -254,7 +279,7 @@ struct RootView: View {
             window: window,
             enabled: model.isCompactMode,
             contentRevision: compactTitlebarContentRevision,
-            content: AnyView(workspaceTabBar)
+            content: AnyView(workspaceTabBar(showsActionControls: true))
         )
     }
 
@@ -279,7 +304,7 @@ struct RootView: View {
         VStack(spacing: 0) {
             if !model.isCompactMode {
                 HStack(spacing: 0) {
-                    workspaceTabBar
+                    workspaceTabBar(showsActionControls: layout.usesCompactToolbar)
                         .layoutPriority(1)
                     if model.selectedAgentChatID == nil {
                         terminalToolbar(layout: layout)
@@ -298,14 +323,15 @@ struct RootView: View {
         }
     }
 
-    private var workspaceTabBar: some View {
+    private func workspaceTabBar(showsActionControls: Bool) -> some View {
         WorkspaceTabBarView(
             model: model,
             onOpenNamedTmux: {
                 tmuxDraft = ""
                 isNamedTmuxPresented = true
             },
-            onRenameWorkspace: beginRenameWorkspace
+            onRenameWorkspace: beginRenameWorkspace,
+            showsActionControls: showsActionControls
         )
     }
 
@@ -739,9 +765,7 @@ struct RootView: View {
 
     private func fullToolbar(layout: ResponsiveLayoutPolicy) -> some View {
         HStack(spacing: 8) {
-            ForEach(
-                Array(model.visibleMainToolbarControls.suffix(layout.mainToolbarControlCapacity))
-            ) { control in
+            ForEach(responsiveTopBarControls(layout: layout)) { control in
                 mainToolbarControl(control, layout: layout)
             }
         }
@@ -749,9 +773,86 @@ struct RootView: View {
         .frame(height: 34)
     }
 
-    @ViewBuilder
+    private func responsiveTopBarControls(layout: ResponsiveLayoutPolicy) -> [UIControlID] {
+        let visibleMainControls = Set(
+            model.visibleMainToolbarControls.suffix(layout.mainToolbarControlCapacity)
+        )
+        return model.visibleTopBarControls.filter { control in
+            control.zone == .tabBar || visibleMainControls.contains(control)
+        }
+    }
+
     private func mainToolbarControl(_ control: UIControlID, layout: ResponsiveLayoutPolicy) -> some View {
-        switch control {
+        Group {
+            switch control {
+        case .newTab:
+            toolbarButton("plus", help: "New Local Shell") {
+                model.createWorkspace()
+            }
+            .contextMenu {
+                Button("New Local Shell") {
+                    model.createWorkspace()
+                }
+                Button("Open Named tmux Session…") {
+                    tmuxDraft = ""
+                    isNamedTmuxPresented = true
+                }
+                Divider()
+                Button("New Agent Chat — Local") {
+                    model.createAgentChatTab(target: .local)
+                }
+                Button("New Agent Chat — Remote") {
+                    model.createAgentChatTab(target: .gae)
+                }
+            }
+        case .remoteHostLaunch:
+            Menu {
+                if model.sshProfiles.isEmpty {
+                    Button("Remote Host Settings…") {
+                        model.isRemoteHostSettingsPresented = true
+                    }
+                } else {
+                    Section("Open Remote Host") {
+                        ForEach(model.sshProfiles) { profile in
+                            Button {
+                                model.createRemoteWorkspace(profile: profile)
+                            } label: {
+                                Label(profile.displayTitle, systemImage: "network")
+                            }
+                        }
+                    }
+                    Divider()
+                    Button("Remote Host Settings…") {
+                        model.isRemoteHostSettingsPresented = true
+                    }
+                }
+            } label: {
+                Image(systemName: "globe")
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help(model.sshProfiles.isEmpty ? "Configure Remote Hosts" : "Open Remote Host")
+        case .tmuxManager:
+            toolbarButton("rectangle.stack", help: "tmux Sessions") {
+                model.isTmuxSessionManagerPresented = true
+            }
+        case .tabBarPinWindow:
+            toolbarButton(
+                model.isMainWindowPinned ? "pin.fill" : "pin",
+                help: model.isMainWindowPinned ? "Unpin Main Window" : "Pin Main Window Above Others"
+            ) {
+                model.isMainWindowPinned.toggle()
+            }
+        case .compactMode:
+            toolbarButton(
+                model.isCompactMode
+                    ? "arrow.up.left.and.arrow.down.right"
+                    : "rectangle.compress.vertical",
+                help: model.isCompactMode ? "Exit compact terminal mode" : "Compact terminal mode"
+            ) {
+                model.isCompactMode.toggle()
+            }
         case .toggleLeftSidebar:
             Button {
                 model.isWorkspaceSidebarCollapsed.toggle()
@@ -829,9 +930,41 @@ struct RootView: View {
                 rightSidebar
                     .frame(width: 320, height: 520)
             }
-        default:
-            EmptyView()
+            default:
+                EmptyView()
+            }
         }
+        .frame(minWidth: 22, minHeight: 24)
+        .contentShape(Rectangle())
+        .onDrag {
+            guard NSEvent.modifierFlags.contains(.command) else {
+                draggedMainToolbarControl = nil
+                return NSItemProvider()
+            }
+
+            draggedMainToolbarControl = control
+            let provider = NSItemProvider()
+            provider.registerDataRepresentation(
+                forTypeIdentifier: mainToolbarControlUTType.identifier,
+                visibility: .all
+            ) { completion in
+                completion(Data(control.rawValue.utf8), nil)
+                return nil
+            }
+            return provider
+        }
+        .onDrop(
+            of: [mainToolbarControlUTType],
+            delegate: MainToolbarReorderDropDelegate(
+                targetControl: control,
+                draggedControl: $draggedMainToolbarControl
+            ) { source, target, after in
+                withAnimation(.snappy(duration: 0.16)) {
+                    model.moveTopBarControl(source, relativeTo: target, after: after)
+                }
+            }
+        )
+        .accessibilityIdentifier("main-toolbar-control-\(control.rawValue)")
     }
 
     private func toolbarButton(

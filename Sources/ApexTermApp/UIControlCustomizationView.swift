@@ -6,13 +6,13 @@ struct UIControlCustomizationView: View {
 
     var body: some View {
         Form {
-            Section("Main Toolbar") {
-                Text("Drag the handle to reorder toolbar buttons. Hidden buttons keep their commands available from menus and shortcuts.")
+            Section("Toolbar") {
+                Text("⌘-drag toolbar icons directly to reorder them. You can also drag the handle here. Hidden buttons keep their commands available from menus and shortcuts.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
                 ForEach(
-                    model.uiControlCustomization.mainToolbarOrder.filter(\.isMainToolbarSurfaceAvailable)
+                    model.uiControlCustomization.topBarOrder
                 ) { control in
                     mainToolbarRow(control)
                 }
@@ -23,8 +23,8 @@ struct UIControlCustomizationView: View {
 
                 HStack {
                     Spacer()
-                    Button("Reset Main Toolbar") {
-                        model.resetMainToolbarCustomization()
+                    Button("Reset Toolbar") {
+                        model.resetTopBarCustomization()
                     }
                 }
             }
@@ -59,11 +59,11 @@ struct UIControlCustomizationView: View {
         .dropDestination(for: String.self) { items, _ in
             guard let rawValue = items.first,
                   let dragged = UIControlID(rawValue: rawValue),
-                  dragged.zone == .mainToolbar,
+                  dragged.isTopBarReorderable,
                   dragged != control else {
                 return false
             }
-            model.moveMainToolbarControl(dragged, before: control)
+            model.moveTopBarControl(dragged, relativeTo: control, after: false)
             return true
         }
     }
@@ -71,7 +71,11 @@ struct UIControlCustomizationView: View {
     @ViewBuilder
     private func controlSection(_ zone: UIControlZone) -> some View {
         Section(zone.title) {
-            ForEach(UIControlID.controls(in: zone)) { control in
+            ForEach(
+                UIControlID.controls(in: zone).filter {
+                    zone != .tabBar || !$0.isTopBarReorderable
+                }
+            ) { control in
                 HStack(spacing: 10) {
                     Image(systemName: control.systemImage)
                         .frame(width: 20)

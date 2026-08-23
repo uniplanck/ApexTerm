@@ -156,12 +156,37 @@ public enum UIControlID: String, Codable, CaseIterable, Identifiable, Sendable {
         }
     }
 
+    public var isTopBarReorderable: Bool {
+        switch self {
+        case .newTab, .remoteHostLaunch, .tmuxManager, .tabBarPinWindow, .compactMode:
+            return true
+        default:
+            return zone == .mainToolbar && isMainToolbarSurfaceAvailable
+        }
+    }
+
     public static func controls(in zone: UIControlZone) -> [UIControlID] {
         allCases.filter { $0.zone == zone }
     }
 }
 
 public struct UIControlCustomization: Codable, Equatable, Sendable {
+    public static let defaultTopBarOrder: [UIControlID] = [
+        .newTab,
+        .remoteHostLaunch,
+        .tmuxManager,
+        .tabBarPinWindow,
+        .compactMode,
+        .commandPalette,
+        .findTerminal,
+        .quickTerminal,
+        .historySearch,
+        .copyContextPack,
+        .openFailureInAgent,
+        .closePane,
+        .maximizePane
+    ]
+
     public static let defaultMainToolbarOrder: [UIControlID] = [
         .toggleLeftSidebar,
         .commandPalette,
@@ -181,13 +206,18 @@ public struct UIControlCustomization: Codable, Equatable, Sendable {
 
     public var hiddenControls: Set<UIControlID>
     public var mainToolbarOrder: [UIControlID]
+    public var topBarOrder: [UIControlID]
 
     public init(
         hiddenControls: Set<UIControlID> = [],
-        mainToolbarOrder: [UIControlID] = Self.defaultMainToolbarOrder
+        mainToolbarOrder: [UIControlID] = Self.defaultMainToolbarOrder,
+        topBarOrder: [UIControlID]? = nil
     ) {
         self.hiddenControls = hiddenControls
         self.mainToolbarOrder = Self.normalizedToolbarOrder(mainToolbarOrder)
+        self.topBarOrder = Self.normalizedTopBarOrder(
+            topBarOrder ?? Self.migratedTopBarOrder(from: self.mainToolbarOrder)
+        )
     }
 
     public func isVisible(_ control: UIControlID) -> Bool {
@@ -215,11 +245,59 @@ public struct UIControlCustomization: Codable, Equatable, Sendable {
         mainToolbarOrder.insert(control, at: max(0, min(insertionIndex, mainToolbarOrder.count)))
     }
 
+    public mutating func moveTopBarControl(
+        _ control: UIControlID,
+        relativeTo target: UIControlID,
+        after: Bool
+    ) {
+        guard control != target,
+              control.isTopBarReorderable,
+              target.isTopBarReorderable,
+              topBarOrder.contains(control),
+              topBarOrder.contains(target) else {
+            return
+        }
+
+        topBarOrder.removeAll { $0 == control }
+        guard let targetIndex = topBarOrder.firstIndex(of: target) else { return }
+        let insertionIndex = targetIndex + (after ? 1 : 0)
+        topBarOrder.insert(control, at: max(0, min(insertionIndex, topBarOrder.count)))
+    }
+
+    public mutating func resetTopBar() {
+        topBarOrder = Self.defaultTopBarOrder
+        for control in Self.defaultTopBarOrder {
+            hiddenControls.remove(control)
+        }
+    }
+
     public mutating func resetMainToolbar() {
         mainToolbarOrder = Self.defaultMainToolbarOrder
         for control in UIControlID.controls(in: .mainToolbar) {
             hiddenControls.remove(control)
         }
+    }
+
+    private static func migratedTopBarOrder(from mainToolbarOrder: [UIControlID]) -> [UIControlID] {
+        let tabBarActions: [UIControlID] = [
+            .newTab,
+            .remoteHostLaunch,
+            .tmuxManager,
+            .tabBarPinWindow,
+            .compactMode
+        ]
+        return tabBarActions + mainToolbarOrder.filter(\.isMainToolbarSurfaceAvailable)
+    }
+
+    private static func normalizedTopBarOrder(_ order: [UIControlID]) -> [UIControlID] {
+        var seen = Set<UIControlID>()
+        var normalized = order.filter { control in
+            control.isTopBarReorderable && seen.insert(control).inserted
+        }
+        for control in defaultTopBarOrder where !seen.contains(control) {
+            normalized.append(control)
+        }
+        return normalized
     }
 
     private static func normalizedToolbarOrder(_ order: [UIControlID]) -> [UIControlID] {
@@ -236,6 +314,7 @@ public struct UIControlCustomization: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case hiddenControls
         case mainToolbarOrder
+        case topBarOrder
     }
 
     public init(from decoder: Decoder) throws {
@@ -244,5 +323,9 @@ public struct UIControlCustomization: Codable, Equatable, Sendable {
         let storedOrder = try container.decodeIfPresent([UIControlID].self, forKey: .mainToolbarOrder)
             ?? Self.defaultMainToolbarOrder
         mainToolbarOrder = Self.normalizedToolbarOrder(storedOrder)
+        let storedTopBarOrder = try container.decodeIfPresent([UIControlID].self, forKey: .topBarOrder)
+        topBarOrder = Self.normalizedTopBarOrder(
+            storedTopBarOrder ?? Self.migratedTopBarOrder(from: mainToolbarOrder)
+        )
     }
 }

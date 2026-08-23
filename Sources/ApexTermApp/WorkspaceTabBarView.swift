@@ -48,6 +48,7 @@ struct WorkspaceTabBarView: View {
     @ObservedObject var model: AppModel
     let onOpenNamedTmux: () -> Void
     let onRenameWorkspace: (Workspace) -> Void
+    let showsActionControls: Bool
 
     @State private var tabWidths: [UUID: CGFloat] = [:]
     @State private var dropIndicator: MainTabDropIndicator?
@@ -101,8 +102,9 @@ struct WorkspaceTabBarView: View {
                 Divider().frame(height: 20)
             }
 
-            if model.isUIControlVisible(.newTab) {
-                NewTabButton(
+            if showsActionControls {
+                if model.isUIControlVisible(.newTab) {
+                    NewTabButton(
                     onCreateLocalShell: model.createWorkspace,
                     onOpenNamedTmux: onOpenNamedTmux,
                     onCreateLocalAgentChat: {
@@ -141,19 +143,20 @@ struct WorkspaceTabBarView: View {
                 .help(model.isMainWindowPinned ? "Unpin Main Window" : "Pin Main Window Above Others")
             }
 
-            if model.isUIControlVisible(.compactMode) {
-                Button {
-                    model.isCompactMode.toggle()
-                } label: {
-                    Image(
-                        systemName: model.isCompactMode
-                            ? "arrow.up.left.and.arrow.down.right"
-                            : "rectangle.compress.vertical"
-                    )
-                    .frame(width: 32, height: 32)
+                if model.isUIControlVisible(.compactMode) {
+                    Button {
+                        model.isCompactMode.toggle()
+                    } label: {
+                        Image(
+                            systemName: model.isCompactMode
+                                ? "arrow.up.left.and.arrow.down.right"
+                                : "rectangle.compress.vertical"
+                        )
+                        .frame(width: 32, height: 32)
+                    }
+                    .buttonStyle(.plain)
+                    .help(model.isCompactMode ? "Exit compact terminal mode" : "Compact terminal mode")
                 }
-                .buttonStyle(.plain)
-                .help(model.isCompactMode ? "Exit compact terminal mode" : "Compact terminal mode")
             }
         }
         .frame(

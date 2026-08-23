@@ -848,6 +848,12 @@ final class AppModel: ObservableObject {
         mainTabOrder
     }
 
+    var visibleTopBarControls: [UIControlID] {
+        uiControlCustomization.topBarOrder.filter {
+            $0.isTopBarReorderable && uiControlCustomization.isVisible($0)
+        }
+    }
+
     var visibleMainToolbarControls: [UIControlID] {
         uiControlCustomization.mainToolbarOrder.filter {
             $0.isMainToolbarSurfaceAvailable && uiControlCustomization.isVisible($0)
@@ -867,6 +873,22 @@ final class AppModel: ObservableObject {
     func moveMainToolbarControl(_ control: UIControlID, before target: UIControlID) {
         var customization = uiControlCustomization
         customization.moveMainToolbarControl(control, before: target)
+        uiControlCustomization = customization
+    }
+
+    func moveTopBarControl(
+        _ control: UIControlID,
+        relativeTo target: UIControlID,
+        after: Bool
+    ) {
+        var customization = uiControlCustomization
+        customization.moveTopBarControl(control, relativeTo: target, after: after)
+        uiControlCustomization = customization
+    }
+
+    func resetTopBarCustomization() {
+        var customization = uiControlCustomization
+        customization.resetTopBar()
         uiControlCustomization = customization
     }
 

@@ -428,12 +428,9 @@ struct SplitTreeView: View {
         isSelected: Bool,
         isColumnFocused: Bool
     ) -> some View {
-        let tabWidth: CGFloat = 48
+        let tabWidth: CGFloat = 36
 
         return HStack(spacing: 5) {
-            Image(systemName: "circle.grid.2x2")
-                .font(.system(size: 8, weight: .medium))
-                .foregroundStyle(.tertiary)
             Circle()
                 .fill(statusColor(for: session.state))
                 .frame(width: 7, height: 7)
