@@ -11,9 +11,15 @@ struct UIControlCustomizationView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                ForEach(model.uiControlCustomization.mainToolbarOrder) { control in
+                ForEach(
+                    model.uiControlCustomization.mainToolbarOrder.filter(\.isMainToolbarSurfaceAvailable)
+                ) { control in
                     mainToolbarRow(control)
                 }
+
+                Text("Sidebar placement/toggle lives in the sidebar itself. Column split directions live in each column + button context menu.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
 
                 HStack {
                     Spacer()
@@ -27,7 +33,6 @@ struct UIControlCustomizationView: View {
             controlSection(.compactToolbar)
             controlSection(.sidebarHeader)
             controlSection(.compactLeftRail)
-            controlSection(.compactRightRail)
         }
         .formStyle(.grouped)
         .padding(.horizontal, 8)

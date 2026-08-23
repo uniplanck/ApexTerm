@@ -17,6 +17,17 @@ final class UIControlCustomizationTests: XCTestCase {
         XCTAssertTrue(customization.isVisible(.quickTerminal))
     }
 
+    func testRetiredToolbarChromeIsNotAvailableOnMainSurface() {
+        XCTAssertFalse(UIControlID.toggleLeftSidebar.isMainToolbarSurfaceAvailable)
+        XCTAssertFalse(UIControlID.toggleRightSidebar.isMainToolbarSurfaceAvailable)
+        XCTAssertFalse(UIControlID.splitVertical.isMainToolbarSurfaceAvailable)
+        XCTAssertFalse(UIControlID.splitHorizontal.isMainToolbarSurfaceAvailable)
+        XCTAssertFalse(UIControlID.toggleCommandHistory.isMainToolbarSurfaceAvailable)
+        XCTAssertFalse(UIControlID.toolbarPinWindow.isMainToolbarSurfaceAvailable)
+        XCTAssertTrue(UIControlID.commandPalette.isMainToolbarSurfaceAvailable)
+        XCTAssertTrue(UIControlID.controls(in: .tabBar).contains(.remoteHostLaunch))
+    }
+
     func testTabSeparatorsAreVisibleByDefaultAndConfigurable() {
         var customization = UIControlCustomization()
 

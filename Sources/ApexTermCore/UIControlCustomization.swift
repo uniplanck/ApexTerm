@@ -15,15 +15,16 @@ public enum UIControlZone: String, Codable, CaseIterable, Identifiable, Sendable
         case .tabBar: "Tab Bar"
         case .mainToolbar: "Main Toolbar"
         case .compactToolbar: "Compact Toolbar"
-        case .sidebarHeader: "Left Sidebar Header"
-        case .compactLeftRail: "Collapsed Left Sidebar"
-        case .compactRightRail: "Collapsed Right Sidebar"
+        case .sidebarHeader: "Sidebar Header"
+        case .compactLeftRail: "Sidebar"
+        case .compactRightRail: "Legacy Right Sidebar"
         }
     }
 }
 
 public enum UIControlID: String, Codable, CaseIterable, Identifiable, Sendable {
     case newTab
+    case remoteHostLaunch
     case tmuxManager
     case tabBarPinWindow
     case compactMode
@@ -64,8 +65,8 @@ public enum UIControlID: String, Codable, CaseIterable, Identifiable, Sendable {
 
     public var zone: UIControlZone {
         switch self {
-        case .newTab, .tmuxManager, .tabBarPinWindow, .compactMode, .tabCloseButtons,
-             .tabSeparators:
+        case .newTab, .remoteHostLaunch, .tmuxManager, .tabBarPinWindow, .compactMode,
+             .tabCloseButtons, .tabSeparators:
             .tabBar
         case .toggleLeftSidebar, .commandPalette, .findTerminal, .quickTerminal,
              .historySearch, .copyContextPack, .openFailureInAgent, .toggleCommandHistory,
@@ -86,6 +87,7 @@ public enum UIControlID: String, Codable, CaseIterable, Identifiable, Sendable {
     public var title: String {
         switch self {
         case .newTab: "New Tab"
+        case .remoteHostLaunch: "Remote Hosts"
         case .tmuxManager: "tmux Sessions"
         case .tabBarPinWindow, .toolbarPinWindow: "Pin Window"
         case .compactMode: "Compact Mode"
@@ -108,7 +110,7 @@ public enum UIControlID: String, Codable, CaseIterable, Identifiable, Sendable {
         case .compactOverflow: "More Menu"
         case .sidebarSettings: "Settings"
         case .sidebarNewWorkspace: "New Workspace"
-        case .expandLeftSidebar: "Expand Left Sidebar"
+        case .expandLeftSidebar: "Sidebar Toggle"
         case .remoteHostSettings: "Remote Host Settings"
         case .expandRightSidebar: "Expand Right Sidebar"
         case .rightRailHistory: "Command History"
@@ -119,6 +121,7 @@ public enum UIControlID: String, Codable, CaseIterable, Identifiable, Sendable {
     public var systemImage: String {
         switch self {
         case .newTab, .sidebarNewWorkspace: "plus"
+        case .remoteHostLaunch: "globe"
         case .tmuxManager: "rectangle.stack"
         case .tabBarPinWindow, .toolbarPinWindow: "pin"
         case .compactMode: "rectangle.compress.vertical"
@@ -139,6 +142,17 @@ public enum UIControlID: String, Codable, CaseIterable, Identifiable, Sendable {
         case .compactOverflow: "ellipsis.circle"
         case .sidebarSettings, .remoteHostSettings: "gearshape"
         case .rightRailAgents: "bolt.horizontal.circle"
+        }
+    }
+
+    public var isMainToolbarSurfaceAvailable: Bool {
+        guard zone == .mainToolbar else { return true }
+        switch self {
+        case .toggleLeftSidebar, .toggleRightSidebar, .splitVertical, .splitHorizontal,
+             .toggleCommandHistory, .toolbarPinWindow:
+            return false
+        default:
+            return true
         }
     }
 

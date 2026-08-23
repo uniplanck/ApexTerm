@@ -19,6 +19,11 @@ private final class TransientNoticePresentationProbe {
     }
 }
 
+private enum WorkspaceSidebarPlacement: String {
+    case left
+    case right
+}
+
 struct RootView: View {
     @ObservedObject var model: AppModel
     @Environment(\.openWindow) private var openWindow
@@ -36,19 +41,20 @@ struct RootView: View {
     @State private var isNamedTmuxPresented = false
     @State private var expandedWorkspaceIDs: Set<UUID> = []
     @State private var expandedRemoteHostAliases: Set<String> = []
+    @AppStorage("apexterm.sidebar.workspacePlacement") private var workspaceSidebarPlacementRaw = WorkspaceSidebarPlacement.left.rawValue
 
     var body: some View {
         GeometryReader { proxy in
             let layout = ResponsiveLayoutPolicy(
                 width: proxy.size.width,
-                agentRailPreferred: model.isAgentRailVisible
+                agentRailPreferred: false
             )
 
             HStack(spacing: 0) {
-                if !model.isCompactMode && layout.showsWorkspaceSidebar {
-                    workspaceSidebar
-                        .frame(width: model.isWorkspaceSidebarCollapsed ? 40 : 210)
-                        .transition(.move(edge: .leading).combined(with: .opacity))
+                if !model.isCompactMode,
+                   layout.showsWorkspaceSidebar,
+                   workspaceSidebarPlacement == .left {
+                    workspaceSidebarSurface(edge: .leading)
                     Divider()
                 }
 
@@ -56,11 +62,11 @@ struct RootView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .layoutPriority(1)
 
-                if !model.isCompactMode && layout.showsAgentRail {
+                if !model.isCompactMode,
+                   layout.showsWorkspaceSidebar,
+                   workspaceSidebarPlacement == .right {
                     Divider()
-                    rightSidebar
-                        .frame(width: model.isRightSidebarCollapsed ? 40 : 280)
-                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                    workspaceSidebarSurface(edge: .trailing)
                 }
             }
             .animation(.easeInOut(duration: 0.16), value: layout)
@@ -272,11 +278,15 @@ struct RootView: View {
     private func terminalColumn(layout: ResponsiveLayoutPolicy) -> some View {
         VStack(spacing: 0) {
             if !model.isCompactMode {
-                workspaceTabBar
-                Divider()
-            }
-            if !model.isCompactMode && model.selectedAgentChatID == nil {
-                terminalToolbar(layout: layout)
+                HStack(spacing: 0) {
+                    workspaceTabBar
+                        .layoutPriority(1)
+                    if model.selectedAgentChatID == nil {
+                        terminalToolbar(layout: layout)
+                            .fixedSize(horizontal: true, vertical: false)
+                    }
+                }
+                .frame(height: 34)
                 Divider()
             }
             terminalCanvas
@@ -299,6 +309,29 @@ struct RootView: View {
         )
     }
 
+    private var workspaceSidebarPlacement: WorkspaceSidebarPlacement {
+        WorkspaceSidebarPlacement(rawValue: workspaceSidebarPlacementRaw) ?? .left
+    }
+
+    private func workspaceSidebarSurface(edge: Edge) -> some View {
+        workspaceSidebar
+            .frame(width: model.isWorkspaceSidebarCollapsed ? 40 : 210)
+            .transition(.move(edge: edge).combined(with: .opacity))
+            .contextMenu {
+                Button(
+                    workspaceSidebarPlacement == .left
+                        ? "Place Sidebar on Right"
+                        : "Place Sidebar on Left"
+                ) {
+                    workspaceSidebarPlacementRaw = (
+                        workspaceSidebarPlacement == .left
+                            ? WorkspaceSidebarPlacement.right
+                            : WorkspaceSidebarPlacement.left
+                    ).rawValue
+                }
+            }
+    }
+
     @ViewBuilder
     private var workspaceSidebar: some View {
         if model.isWorkspaceSidebarCollapsed {
@@ -314,6 +347,16 @@ struct RootView: View {
                 Text("APEXTERM")
                     .font(.system(size: max(9, model.sidebarFontSize - 1), weight: .bold))
                 Spacer()
+                if model.isUIControlVisible(.expandLeftSidebar) {
+                    Button {
+                        model.isWorkspaceSidebarCollapsed = true
+                    } label: {
+                        Image(systemName: workspaceSidebarPlacement == .left ? "sidebar.leading" : "sidebar.trailing")
+                    }
+                    .buttonStyle(.plain)
+                    .help("Collapse sidebar")
+                }
+
                 if model.isUIControlVisible(.sidebarSettings) {
                     Button {
                         model.isSettingsPresented = true
@@ -562,10 +605,10 @@ struct RootView: View {
                 Button {
                     model.isWorkspaceSidebarCollapsed = false
                 } label: {
-                    Image(systemName: "sidebar.left")
+                    Image(systemName: workspaceSidebarPlacement == .left ? "sidebar.left" : "sidebar.right")
                 }
                 .buttonStyle(.borderless)
-                .help("Expand left sidebar")
+                .help("Expand sidebar")
                 .padding(.top, 8)
             }
 
@@ -628,15 +671,6 @@ struct RootView: View {
                 }
             }
 
-            Image(systemName: "terminal")
-                .foregroundStyle(.secondary)
-            Text(model.selectedSession?.title ?? model.terminalTitle)
-                .font(.system(size: 13, weight: .semibold))
-                .lineLimit(1)
-                .truncationMode(.middle)
-
-            Spacer(minLength: 4)
-
             if model.isUIControlVisible(.compactFind) {
                 Button {
                     model.requestFind()
@@ -677,12 +711,6 @@ struct RootView: View {
 
                 Divider()
 
-                Button("Split Left / Right") {
-                    model.splitSelected(axis: .vertical)
-                }
-                Button("Split Top / Bottom") {
-                    model.splitSelected(axis: .horizontal)
-                }
                 Button("Close Selected Tab") {
                     model.closeSelectedSession()
                 }
@@ -697,55 +725,28 @@ struct RootView: View {
                 Button("Remote Host Settings") {
                     model.isRemoteHostSettingsPresented = true
                 }
-                Button(model.isWorkspaceSidebarCollapsed ? "Expand Left Sidebar" : "Collapse Left Sidebar") {
-                    model.isWorkspaceSidebarCollapsed.toggle()
-                }
-                Button(model.isRightSidebarCollapsed ? "Expand Right Sidebar" : "Collapse Right Sidebar") {
-                    model.isRightSidebarCollapsed.toggle()
-                }
-                Button(model.isCommandHistoryVisible ? "Hide Command History" : "Show Command History") {
-                    model.isCommandHistoryVisible.toggle()
-                }
-                Button(model.isMainWindowPinned ? "Unpin Window" : "Pin Window Above Others") {
-                    model.isMainWindowPinned.toggle()
-                }
-                Button("Agent Runs") {
-                    isAgentPopoverPresented.toggle()
-                }
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
-                .popover(isPresented: $isAgentPopoverPresented, arrowEdge: .bottom) {
-                    rightSidebar
-                        .frame(width: 320, height: 520)
-                }
             }
         }
-        .padding(.horizontal, 10)
-        .frame(height: 42)
+        .padding(.horizontal, 6)
+        .frame(height: 34)
     }
 
     private func fullToolbar(layout: ResponsiveLayoutPolicy) -> some View {
         HStack(spacing: 8) {
-            Image(systemName: "terminal")
-                .foregroundStyle(.secondary)
-            Text(model.selectedSession?.title ?? model.terminalTitle)
-                .font(.system(size: 13, weight: .semibold))
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Spacer(minLength: 8)
-
             ForEach(
                 Array(model.visibleMainToolbarControls.suffix(layout.mainToolbarControlCapacity))
             ) { control in
                 mainToolbarControl(control, layout: layout)
             }
         }
-        .padding(.horizontal, 12)
-        .frame(height: 42)
+        .padding(.horizontal, 6)
+        .frame(height: 34)
     }
 
     @ViewBuilder
@@ -1328,6 +1329,34 @@ struct RootView: View {
             ],
             to: outputPath
         )
+    }
+
+    private func waitForNativePaneProbeTargetWidth(
+        sessionID: UUID,
+        filePath: String?
+    ) async -> CGFloat? {
+        for _ in 0..<20 {
+            if let width = nativePaneProbeTargetWidth(sessionID: sessionID, filePath: filePath) {
+                return width
+            }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        return nil
+    }
+
+    private func nativePaneProbeTargetWidth(
+        sessionID: UUID,
+        filePath: String?
+    ) -> CGFloat? {
+        guard let filePath,
+              let data = FileManager.default.contents(atPath: filePath),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let targets = root["targets"] as? [String: Any],
+              let rect = targets[sessionID.uuidString] as? [String: Any],
+              let width = rect["width"] as? NSNumber else {
+            return nil
+        }
+        return CGFloat(truncating: width)
     }
 
     @MainActor
@@ -1964,9 +1993,31 @@ struct RootView: View {
         let focusedAddIdentifier = "terminal-column-add-tab-\(focusedSessionID.uuidString)"
         let focusedAddView = findView(accessibilityIdentifier: focusedAddIdentifier)
         let focusedPlusVisible = focusedAddView != nil
-        let nonFocusedPlusHidden = nonFocusedSessionID.map {
-            findView(accessibilityIdentifier: "terminal-column-add-tab-\($0.uuidString)") == nil
+        let nonFocusedPlusVisible = nonFocusedSessionID.map {
+            findView(accessibilityIdentifier: "terminal-column-add-tab-\($0.uuidString)") != nil
         } ?? false
+        let splitMenuTitles = (focusedAddView as? NSButton)?.menu?.items
+            .filter { !$0.isSeparatorItem }
+            .map(\.title) ?? []
+        let splitMenuAvailable = splitMenuTitles == [
+            "New Column Left",
+            "New Column Right",
+            "New Column Above",
+            "New Column Below"
+        ]
+        let dragProbePath = environment["APEXTERM_NATIVE_PANE_DRAG_PROBE_FILE"]
+        let focusedWidthBefore = await waitForNativePaneProbeTargetWidth(
+            sessionID: focusedSessionID,
+            filePath: dragProbePath
+        )
+        let nonFocusedWidthBefore: CGFloat? = if let nonFocusedSessionID {
+            await waitForNativePaneProbeTargetWidth(
+                sessionID: nonFocusedSessionID,
+                filePath: dragProbePath
+            )
+        } else {
+            nil
+        }
 
         let plusPressed: Bool
         if let button = focusedAddView as? NSButton {
@@ -1996,13 +2047,42 @@ struct RootView: View {
         let selectedPlusVisible = newSelectedSessionID.map {
             findView(accessibilityIdentifier: "terminal-column-add-tab-\($0.uuidString)") != nil
         } ?? false
+        let focusedWidthAfter: CGFloat? = if let newSelectedSessionID {
+            await waitForNativePaneProbeTargetWidth(
+                sessionID: newSelectedSessionID,
+                filePath: dragProbePath
+            )
+        } else {
+            nil
+        }
+        let nonFocusedWidthAfter: CGFloat? = if let nonFocusedSessionID {
+            await waitForNativePaneProbeTargetWidth(
+                sessionID: nonFocusedSessionID,
+                filePath: dragProbePath
+            )
+        } else {
+            nil
+        }
+        let focusedWidthStable = if let focusedWidthBefore, let focusedWidthAfter {
+            abs(focusedWidthBefore - focusedWidthAfter) <= 2
+        } else {
+            false
+        }
+        let nonFocusedWidthStable = if let nonFocusedWidthBefore, let nonFocusedWidthAfter {
+            abs(nonFocusedWidthBefore - nonFocusedWidthAfter) <= 2
+        } else {
+            false
+        }
+        let columnWidthsStable = focusedWidthStable && nonFocusedWidthStable
 
         let result = [
             "two_columns=\(columnsBefore == 2 ? 1 : 0)",
             "focused_plus_visible=\(focusedPlusVisible ? 1 : 0)",
-            "nonfocused_plus_hidden=\(nonFocusedPlusHidden ? 1 : 0)",
+            "nonfocused_plus_visible=\(nonFocusedPlusVisible ? 1 : 0)",
+            "plus_split_menu=\(splitMenuAvailable ? 1 : 0)",
             "plus_press=\(plusPressed ? 1 : 0)",
             "column_count_stable=\(columnsAfter == columnsBefore ? 1 : 0)",
+            "column_widths_stable=\(columnWidthsStable ? 1 : 0)",
             "tab_count_incremented=\(tabsAfter == tabsBefore + 1 ? 1 : 0)",
             "tab_added_inside_focused_column=\(addedInsideFocusedColumn ? 1 : 0)",
             "new_selected_tab_plus_visible=\(selectedPlusVisible ? 1 : 0)"

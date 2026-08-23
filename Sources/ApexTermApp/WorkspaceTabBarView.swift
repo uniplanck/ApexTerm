@@ -113,7 +113,9 @@ struct WorkspaceTabBarView: View {
                     }
                 )
                 .frame(width: 32, height: 32)
+            }
 
+            if model.isUIControlVisible(.remoteHostLaunch) {
                 remoteHostLaunchMenu
             }
 

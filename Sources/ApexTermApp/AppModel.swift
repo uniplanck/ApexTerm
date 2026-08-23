@@ -849,7 +849,9 @@ final class AppModel: ObservableObject {
     }
 
     var visibleMainToolbarControls: [UIControlID] {
-        uiControlCustomization.mainToolbarOrder.filter { uiControlCustomization.isVisible($0) }
+        uiControlCustomization.mainToolbarOrder.filter {
+            $0.isMainToolbarSurfaceAvailable && uiControlCustomization.isVisible($0)
+        }
     }
 
     func isUIControlVisible(_ control: UIControlID) -> Bool {
@@ -2290,16 +2292,26 @@ final class AppModel: ObservableObject {
     }
 
     func splitSelected(axis: SplitNode.SplitAxis) {
-        guard let selectedSessionID,
-              let workspaceIndex = workspaces.firstIndex(where: { $0.id == selectedWorkspaceID }),
-              SplitTreeOperations.contains(
-                sessionID: selectedSessionID,
-                in: workspaces[workspaceIndex].layout
-              ) else {
+        guard let selectedSessionID else { return }
+        splitTerminalColumn(
+            containing: selectedSessionID,
+            axis: axis,
+            newColumnFirst: false
+        )
+    }
+
+    func splitTerminalColumn(
+        containing anchorSessionID: UUID,
+        axis: SplitNode.SplitAxis,
+        newColumnFirst: Bool
+    ) {
+        guard let workspaceIndex = workspaces.firstIndex(where: {
+            SplitTreeOperations.contains(sessionID: anchorSessionID, in: $0.layout)
+        }) else {
             return
         }
 
-        let source = session(id: selectedSessionID)
+        let source = session(id: anchorSessionID)
         let newKind = source?.kind ?? .local
         let newTitle: String
         if newKind == .local {
@@ -2317,9 +2329,10 @@ final class AppModel: ObservableObject {
             in: workspaces[workspaceIndex].layout
         )
         let newLayout = SplitTreeOperations.split(
-            sessionID: selectedSessionID,
+            sessionID: anchorSessionID,
             newSessionID: newSession.id,
             axis: axis,
+            newPaneFirst: newColumnFirst,
             in: workspaces[workspaceIndex].layout
         )
         guard SplitTreeOperations.paneCount(in: newLayout) > previousCount else {
@@ -2330,7 +2343,8 @@ final class AppModel: ObservableObject {
         workspaces[workspaceIndex].layout = newLayout
         workspaces[workspaceIndex].updatedAt = Date()
         sessions.append(newSession)
-        self.selectedSessionID = newSession.id
+        selectedWorkspaceID = workspaces[workspaceIndex].id
+        selectedSessionID = newSession.id
         commitState()
     }
 

@@ -97,9 +97,11 @@ launch_case() {
   for expected in \
     'two_columns=1' \
     'focused_plus_visible=1' \
-    'nonfocused_plus_hidden=1' \
+    'nonfocused_plus_visible=1' \
+    'plus_split_menu=1' \
     'plus_press=1' \
     'column_count_stable=1' \
+    'column_widths_stable=1' \
     'tab_count_incremented=1' \
     'tab_added_inside_focused_column=1' \
     'new_selected_tab_plus_visible=1'
@@ -586,6 +588,6 @@ for case_name in "${requested_cases[@]}"; do
   esac
 done
 
-printf 'COLUMN_FOCUSED_PLUS_UI_E2E=PASS\n'
+printf 'COLUMN_PLUS_UI_E2E=PASS\n'
 printf 'NATIVE_PANE_DRAG_E2E=PASS\n'
 printf 'TERMINAL_COLUMN_TABS_E2E=PASS\n'

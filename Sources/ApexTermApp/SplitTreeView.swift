@@ -12,9 +12,10 @@ private final class FixedWidthTranscriptModeButton: NSButton {
 private struct NativeColumnAddTabButton: NSViewRepresentable {
     let accessibilityIdentifier: String
     let action: @MainActor () -> Void
+    let splitAction: @MainActor (SplitNode.SplitAxis, Bool) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(action: action)
+        Coordinator(action: action, splitAction: splitAction)
     }
 
     func makeNSView(context: Context) -> NSButton {
@@ -29,30 +30,70 @@ private struct NativeColumnAddTabButton: NSViewRepresentable {
         button.identifier = NSUserInterfaceItemIdentifier(accessibilityIdentifier)
         button.setAccessibilityIdentifier(accessibilityIdentifier)
         button.setAccessibilityLabel("New terminal tab in this column")
-        button.toolTip = "New terminal tab in this column"
+        button.toolTip = "Click: new tab. Right-click: split this column."
         button.isBordered = false
         button.focusRingType = .none
         button.imagePosition = .imageOnly
         button.setButtonType(.momentaryPushIn)
+        button.menu = context.coordinator.makeSplitMenu()
         return button
     }
 
     func updateNSView(_ button: NSButton, context: Context) {
         context.coordinator.action = action
+        context.coordinator.splitAction = splitAction
         button.identifier = NSUserInterfaceItemIdentifier(accessibilityIdentifier)
         button.setAccessibilityIdentifier(accessibilityIdentifier)
+        button.menu = context.coordinator.makeSplitMenu()
     }
 
     @MainActor
     final class Coordinator: NSObject {
         var action: @MainActor () -> Void
+        var splitAction: @MainActor (SplitNode.SplitAxis, Bool) -> Void
 
-        init(action: @escaping @MainActor () -> Void) {
+        init(
+            action: @escaping @MainActor () -> Void,
+            splitAction: @escaping @MainActor (SplitNode.SplitAxis, Bool) -> Void
+        ) {
             self.action = action
+            self.splitAction = splitAction
         }
 
         @objc func performAction(_ sender: NSButton) {
             action()
+        }
+
+        func makeSplitMenu() -> NSMenu {
+            let menu = NSMenu(title: "Split Column")
+            menu.addItem(menuItem("New Column Left", action: #selector(splitLeft)))
+            menu.addItem(menuItem("New Column Right", action: #selector(splitRight)))
+            menu.addItem(.separator())
+            menu.addItem(menuItem("New Column Above", action: #selector(splitAbove)))
+            menu.addItem(menuItem("New Column Below", action: #selector(splitBelow)))
+            return menu
+        }
+
+        private func menuItem(_ title: String, action: Selector) -> NSMenuItem {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            return item
+        }
+
+        @objc private func splitLeft() {
+            splitAction(.vertical, true)
+        }
+
+        @objc private func splitRight() {
+            splitAction(.vertical, false)
+        }
+
+        @objc private func splitAbove() {
+            splitAction(.horizontal, true)
+        }
+
+        @objc private func splitBelow() {
+            splitAction(.horizontal, false)
         }
     }
 }
@@ -337,7 +378,9 @@ struct SplitTreeView: View {
         selectedSessionID: UUID,
         isFocused: Bool
     ) -> some View {
-        HStack(spacing: 0) {
+        let tabStripMaxWidth = min(CGFloat(column.sessionIDs.count) * 50 + 8, 300)
+
+        return HStack(spacing: 0) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 2) {
                     ForEach(column.sessionIDs, id: \.self) { sessionID in
@@ -353,29 +396,24 @@ struct SplitTreeView: View {
                 .padding(.horizontal, 4)
                 .frame(minHeight: 31)
             }
+            .frame(maxWidth: tabStripMaxWidth)
 
-            if isFocused {
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 4) {
-                        Text(model.commandStatus(sessionID: selectedSessionID) ?? "")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                        commandPresetMenu(sessionID: selectedSessionID)
-                        CommandTranscriptModeCycleButton(mode: $model.commandTranscriptMode)
-                            .frame(width: 30, height: 20)
-                        columnAddButton(anchorSessionID: selectedSessionID)
-                    }
-                    HStack(spacing: 4) {
-                        CommandTranscriptModeCycleButton(mode: $model.commandTranscriptMode)
-                            .frame(width: 30, height: 20)
-                        columnAddButton(anchorSessionID: selectedSessionID)
-                    }
-                    columnAddButton(anchorSessionID: selectedSessionID)
+            Color.clear
+                .frame(minWidth: 12, maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    model.selectSession(selectedSessionID)
                 }
-                .fixedSize(horizontal: true, vertical: false)
-                .padding(.trailing, 5)
+
+            HStack(spacing: 4) {
+                if isFocused {
+                    CommandTranscriptModeCycleButton(mode: $model.commandTranscriptMode)
+                        .frame(width: 30, height: 20)
+                }
+                columnAddButton(anchorSessionID: selectedSessionID)
             }
+            .fixedSize(horizontal: true, vertical: false)
+            .padding(.trailing, 5)
         }
         .frame(height: 32)
         .background(
@@ -390,25 +428,15 @@ struct SplitTreeView: View {
         isSelected: Bool,
         isColumnFocused: Bool
     ) -> some View {
-        let tabWidth: CGFloat = if session.kind == .local
-            && LocalShellNaming.isAutomaticTitle(session.title) {
-            80
-        } else {
-            168
-        }
+        let tabWidth: CGFloat = 48
 
-        return HStack(spacing: 6) {
+        return HStack(spacing: 5) {
             Image(systemName: "circle.grid.2x2")
                 .font(.system(size: 8, weight: .medium))
                 .foregroundStyle(.tertiary)
             Circle()
                 .fill(statusColor(for: session.state))
                 .frame(width: 7, height: 7)
-            Text(session.title)
-                .font(.caption.weight(isSelected ? .semibold : .medium))
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Spacer(minLength: 2)
             Button {
                 model.closeSession(id: session.id)
             } label: {
@@ -418,7 +446,7 @@ struct SplitTreeView: View {
             .buttonStyle(.plain)
             .help("Close terminal tab")
         }
-        .padding(.horizontal, 8)
+        .padding(.horizontal, 6)
         .frame(width: tabWidth, height: 28)
         .contentShape(Rectangle())
         .background(
@@ -448,10 +476,6 @@ struct SplitTreeView: View {
         }
         .onTapGesture {
             model.selectSession(session.id)
-        }
-        .onTapGesture(count: 2) {
-            renameSessionID = session.id
-            renameDraft = session.title
         }
         .onDrag {
             model.selectSession(session.id)
@@ -496,16 +520,24 @@ struct SplitTreeView: View {
             NativeTerminalTabProbe(sessionID: session.id)
                 .allowsHitTesting(false)
         }
-        .help("Drag to reorder, move into another column, or drop on a column edge")
+        .help("\(session.title) — drag to reorder or move")
         .accessibilityIdentifier("terminal-column-tab-\(session.id.uuidString)")
     }
 
     private func columnAddButton(anchorSessionID: UUID) -> some View {
         NativeColumnAddTabButton(
-            accessibilityIdentifier: "terminal-column-add-tab-\(anchorSessionID.uuidString)"
-        ) {
-            model.addTerminalTab(toColumnContaining: anchorSessionID)
-        }
+            accessibilityIdentifier: "terminal-column-add-tab-\(anchorSessionID.uuidString)",
+            action: {
+                model.addTerminalTab(toColumnContaining: anchorSessionID)
+            },
+            splitAction: { axis, newColumnFirst in
+                model.splitTerminalColumn(
+                    containing: anchorSessionID,
+                    axis: axis,
+                    newColumnFirst: newColumnFirst
+                )
+            }
+        )
         .frame(width: 22, height: 22)
     }
 
@@ -888,13 +920,19 @@ struct SplitTreeView: View {
         second: SplitNode
     ) -> String {
         let axisKey = axis == .vertical ? "v" : "h"
-        let firstIDs = SplitTreeOperations.sessionIDs(in: first)
-            .map(\.uuidString)
-            .joined(separator: ",")
-        let secondIDs = SplitTreeOperations.sessionIDs(in: second)
-            .map(\.uuidString)
-            .joined(separator: ",")
-        return "\(axisKey):\(ratio):\(SplitTreeOperations.columnCount(in: first)):\(firstIDs)|\(SplitTreeOperations.columnCount(in: second)):\(secondIDs)"
+        return "\(axisKey):\(ratio):\(splitStructureKey(first))|\(splitStructureKey(second))"
+    }
+
+    private func splitStructureKey(_ node: SplitNode) -> String {
+        switch node {
+        case let .pane(sessionID):
+            return "p:\(sessionID.uuidString)"
+        case let .column(column):
+            return "c:\(column.id.uuidString)"
+        case let .split(axis, ratio, first, second):
+            let axisKey = axis == .vertical ? "v" : "h"
+            return "s:\(axisKey):\(ratio):(\(splitStructureKey(first))|\(splitStructureKey(second)))"
+        }
     }
 
     private func livePaneHeightKey(for sessionID: UUID) -> String {
