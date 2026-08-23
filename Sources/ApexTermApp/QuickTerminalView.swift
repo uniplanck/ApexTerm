@@ -453,6 +453,7 @@ private struct QuickTerminalGroupView: View {
                     smartPasteProtectionEnabled: smartPasteProtectionEnabled,
                     multilinePasteConfirmationEnabled: multilinePasteConfirmationEnabled
                 ),
+                isActive: true,
                 onTitleChange: { _ in },
                 onDirectoryChange: { _ in },
                 onStateChange: { state = $0 },

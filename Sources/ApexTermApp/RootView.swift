@@ -846,6 +846,9 @@ struct RootView: View {
                 }
                 .buttonStyle(.borderless)
                 .help("Workspaces")
+                .contextMenu {
+                    toolbarControlContextMenu(.compactWorkspaces)
+                }
                 .popover(isPresented: $isWorkspacePopoverPresented, arrowEdge: .bottom) {
                     workspaceSidebar
                         .frame(width: 280, height: 480)
@@ -860,6 +863,9 @@ struct RootView: View {
                 }
                 .buttonStyle(.borderless)
                 .help("Find in Terminal")
+                .contextMenu {
+                    toolbarControlContextMenu(.compactFind)
+                }
             }
 
             if model.isUIControlVisible(.compactHistorySearch) {
@@ -870,6 +876,9 @@ struct RootView: View {
                 }
                 .buttonStyle(.borderless)
                 .help("Search Command History")
+                .contextMenu {
+                    toolbarControlContextMenu(.compactHistorySearch)
+                }
             }
 
             if model.isUIControlVisible(.compactOverflow) {
@@ -912,6 +921,9 @@ struct RootView: View {
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
+                .contextMenu {
+                    toolbarControlContextMenu(.compactOverflow)
+                }
             }
         }
         .padding(.horizontal, 6)
@@ -984,22 +996,6 @@ struct RootView: View {
         case .newTab:
             toolbarButton("plus", help: "New Local Shell") {
                 model.createWorkspace()
-            }
-            .contextMenu {
-                Button("New Local Shell") {
-                    model.createWorkspace()
-                }
-                Button("Open Named tmux Session…") {
-                    tmuxDraft = ""
-                    isNamedTmuxPresented = true
-                }
-                Divider()
-                Button("New Agent Chat — Local") {
-                    model.createAgentChatTab(target: .local)
-                }
-                Button("New Agent Chat — Remote") {
-                    model.createAgentChatTab(target: .gae)
-                }
             }
         case .remoteHostLaunch:
             Menu {
@@ -1144,6 +1140,43 @@ struct RootView: View {
             }
         }
         .accessibilityIdentifier("main-toolbar-control-\(control.rawValue)")
+        .contextMenu {
+            toolbarControlContextMenu(control)
+        }
+    }
+
+    @ViewBuilder
+    private func toolbarControlContextMenu(_ control: UIControlID) -> some View {
+        if control == .newTab {
+            Button("New Local Shell") {
+                model.createWorkspace()
+            }
+            Button("Open Named tmux Session…") {
+                tmuxDraft = ""
+                isNamedTmuxPresented = true
+            }
+            Divider()
+            Button("New Agent Chat — Local") {
+                model.createAgentChatTab(target: .local)
+            }
+            Button("New Agent Chat — Remote") {
+                model.createAgentChatTab(target: .gae)
+            }
+            Divider()
+        }
+
+        Button {
+            model.setUIControlVisible(control, visible: false)
+        } label: {
+            Label("Hide This Icon", systemImage: "eye.slash")
+        }
+
+        Button {
+            model.settingsTab = .buttons
+            model.isSettingsPresented = true
+        } label: {
+            Label("Show / Hide Icons…", systemImage: "slider.horizontal.3")
+        }
     }
 
     private func toolbarButton(

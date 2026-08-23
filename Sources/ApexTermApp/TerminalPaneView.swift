@@ -7,6 +7,7 @@ import SwiftUI
 @MainActor
 struct TerminalPaneView: NSViewRepresentable {
     let session: TerminalSessionSnapshot
+    let isActive: Bool
     let onTitleChange: (String) -> Void
     let onDirectoryChange: (String?) -> Void
     let onStateChange: (SessionState) -> Void
@@ -131,6 +132,7 @@ struct TerminalPaneView: NSViewRepresentable {
         terminal.configureInlineImageSafetyPolicy(session.inlineImageSafetyPolicy)
         terminal.configureResourceBudget()
         terminal.onActivate = onActivate
+        container.setInteractionActive(isActive)
         if abs(terminal.font.pointSize - CGFloat(session.fontSize)) > 0.1 {
             terminal.font = NSFont.monospacedSystemFont(
                 ofSize: CGFloat(session.fontSize),
@@ -639,6 +641,7 @@ final class ApexTerminalContainerView: NSView {
         "APEXTERM_PROMPT_RESTORE_PROBE_FILE"
     ]
     private var promptProbeWritten = false
+    private var isInteractionActive = false
 
     init(terminal: ApexLocalProcessTerminalView) {
         self.terminal = terminal
@@ -673,8 +676,17 @@ final class ApexTerminalContainerView: NSView {
             prepareForDetachment()
         } else {
             prepareForPresentation()
-            terminal.requestFocusWhenReady()
+            terminal.setInteractionActive(isInteractionActive)
         }
+    }
+
+    func setInteractionActive(_ active: Bool) {
+        guard isInteractionActive != active else {
+            terminal.setInteractionActive(active)
+            return
+        }
+        isInteractionActive = active
+        terminal.setInteractionActive(active)
     }
 
     func prepareForPresentation() {
@@ -1109,6 +1121,7 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
     private var kittyGraphicsFilter = TerminalKittyGraphicsSafetyFilter(policy: .localDefault)
     private var sixelFilter = TerminalSixelSafetyFilter()
     private var programmaticInputEnabled = false
+    private var interactionActive = false
     private var capturedCommand = ""
     private var capturedOutput: [UInt8] = []
     private var commandStartedAt: Date?
@@ -1300,7 +1313,34 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        requestFocusWhenReady()
+        setInteractionActive(interactionActive)
+    }
+
+    func setInteractionActive(_ active: Bool) {
+        interactionActive = active
+        terminal.setCursorStyle(cursorStyle(forActiveState: active))
+        needsDisplay = true
+        layer?.setNeedsDisplay()
+
+        if active {
+            requestFocusWhenReady()
+        } else {
+            cancelPendingFocusRequest()
+            if window?.firstResponder === self {
+                window?.makeFirstResponder(nil)
+            }
+        }
+    }
+
+    private func cursorStyle(forActiveState active: Bool) -> CursorStyle {
+        switch terminal.options.cursorStyle {
+        case .blinkBlock, .steadyBlock:
+            return active ? .blinkBlock : .steadyBlock
+        case .blinkUnderline, .steadyUnderline:
+            return active ? .blinkUnderline : .steadyUnderline
+        case .blinkBar, .steadyBar:
+            return active ? .blinkBar : .steadyBar
+        }
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -1507,6 +1547,7 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
 
         if streamParser.canBypass(trustedSlice) {
             processTerminalData(trustedSlice)
+            enforceInactiveCursorStyle()
             return
         }
 
@@ -1522,6 +1563,12 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
                 }
             }
         }
+        enforceInactiveCursorStyle()
+    }
+
+    private func enforceInactiveCursorStyle() {
+        guard !interactionActive else { return }
+        terminal.setCursorStyle(cursorStyle(forActiveState: false))
     }
 
     private func processTerminalData(_ bytes: ArraySlice<UInt8>) {

@@ -349,7 +349,8 @@ struct SplitTreeView: View {
                 pane(
                     sessionID: resolvedSessionID,
                     showsHeader: false,
-                    allowsSelfEdgeDrop: column.sessionIDs.count > 1
+                    allowsSelfEdgeDrop: column.sessionIDs.count > 1,
+                    isActive: isFocused
                 )
             }
             .background(Color(nsColor: .windowBackgroundColor))
@@ -379,7 +380,8 @@ struct SplitTreeView: View {
         isFocused: Bool
     ) -> some View {
         let tabCount = max(1, column.sessionIDs.count)
-        let tabStripIdealWidth = CGFloat(tabCount) * 36
+        let tabStripIdealWidth = 36
+            + CGFloat(max(0, tabCount - 1)) * 20
             + CGFloat(max(0, tabCount - 1)) * 2
             + 8
 
@@ -437,20 +439,22 @@ struct SplitTreeView: View {
         isSelected: Bool,
         isColumnFocused: Bool
     ) -> some View {
-        let tabWidth: CGFloat = 36
+        let tabWidth: CGFloat = isSelected ? 36 : 20
 
         return HStack(spacing: 5) {
             Circle()
                 .fill(statusColor(for: session.state))
                 .frame(width: 7, height: 7)
-            Button {
-                model.closeSession(id: session.id)
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 9, weight: .semibold))
+            if isSelected {
+                Button {
+                    model.closeSession(id: session.id)
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+                .help("Close terminal tab")
             }
-            .buttonStyle(.plain)
-            .help("Close terminal tab")
         }
         .padding(.horizontal, 6)
         .frame(width: tabWidth, height: 28)
@@ -551,7 +555,8 @@ struct SplitTreeView: View {
     private func pane(
         sessionID: UUID,
         showsHeader: Bool = true,
-        allowsSelfEdgeDrop: Bool = false
+        allowsSelfEdgeDrop: Bool = false,
+        isActive: Bool = false
     ) -> some View {
         if let session = model.session(id: sessionID) {
             GeometryReader { proxy in
@@ -733,6 +738,7 @@ struct SplitTreeView: View {
                                 smartPasteProtectionEnabled: model.smartPasteProtectionEnabled,
                                 multilinePasteConfirmationEnabled: model.multilinePasteConfirmationEnabled
                             ),
+                            isActive: isActive,
                             onTitleChange: { title in
                                 model.updateTerminalTitle(title, sessionID: session.id)
                             },
