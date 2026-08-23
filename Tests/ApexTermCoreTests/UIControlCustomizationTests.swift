@@ -19,6 +19,19 @@ final class UIControlCustomizationTests: XCTestCase {
         XCTAssertTrue(customization.isVisible(.quickTerminal))
     }
 
+    func testEveryControlHasPreviewMetadata() {
+        for control in UIControlID.allCases {
+            XCTAssertFalse(control.shortDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            XCTAssertFalse(control.detailDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            XCTAssertFalse(control.placementTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+
+        XCTAssertTrue(UIControlID.toggleRightSidebar.isLegacy)
+        XCTAssertFalse(UIControlID.commandPalette.isLegacy)
+        XCTAssertEqual(UIControlID.newTab.recommendation, .high)
+        XCTAssertEqual(UIControlID.toggleRightSidebar.recommendation, .low)
+    }
+
     func testRetiredToolbarChromeIsNotAvailableOnMainSurface() {
         XCTAssertFalse(UIControlID.toggleLeftSidebar.isMainToolbarSurfaceAvailable)
         XCTAssertFalse(UIControlID.toggleRightSidebar.isMainToolbarSurfaceAvailable)

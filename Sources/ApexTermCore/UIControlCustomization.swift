@@ -22,6 +22,28 @@ public enum UIControlZone: String, Codable, CaseIterable, Identifiable, Sendable
     }
 }
 
+public enum UIControlRecommendation: String, Equatable, Sendable {
+    case high
+    case medium
+    case low
+
+    public var title: String {
+        switch self {
+        case .high: "Recommended"
+        case .medium: "Useful"
+        case .low: "Optional"
+        }
+    }
+
+    public var systemImage: String {
+        switch self {
+        case .high: "star.fill"
+        case .medium: "star.leadinghalf.filled"
+        case .low: "star"
+        }
+    }
+}
+
 public enum UIControlID: String, Codable, CaseIterable, Identifiable, Sendable {
     case newTab
     case remoteHostLaunch
@@ -142,6 +164,111 @@ public enum UIControlID: String, Codable, CaseIterable, Identifiable, Sendable {
         case .compactOverflow: "ellipsis.circle"
         case .sidebarSettings, .remoteHostSettings: "gearshape"
         case .rightRailAgents: "bolt.horizontal.circle"
+        }
+    }
+
+    public var shortDescription: String {
+        switch self {
+        case .newTab: "Create a new terminal tab."
+        case .remoteHostLaunch: "Open a saved remote connection."
+        case .tmuxManager: "Browse and attach to tmux sessions."
+        case .tabBarPinWindow, .toolbarPinWindow: "Keep ApexTerm above other windows."
+        case .compactMode: "Reduce interface chrome for more terminal space."
+        case .tabCloseButtons: "Show the close button on the active terminal tab."
+        case .tabSeparators: "Show visual separators between terminal tabs."
+        case .toggleLeftSidebar: "Legacy control for opening the left sidebar."
+        case .commandPalette: "Search and run ApexTerm actions from one place."
+        case .findTerminal, .compactFind: "Search text in the active terminal."
+        case .quickTerminal: "Open the lightweight Quick Terminal window."
+        case .historySearch, .compactHistorySearch: "Search commands you ran previously."
+        case .copyContextPack: "Copy useful terminal context for sharing or AI tools."
+        case .openFailureInAgent: "Send the latest failed command context to Agent Chat."
+        case .toggleCommandHistory: "Legacy shortcut for the command-history panel."
+        case .splitVertical: "Legacy toolbar control for a left/right column split."
+        case .splitHorizontal: "Legacy toolbar control for a top/bottom column split."
+        case .closePane: "Close the currently selected terminal tab."
+        case .maximizePane: "Maximize the active column or restore the layout."
+        case .toggleRightSidebar: "Legacy control for the retired right sidebar."
+        case .compactWorkspaces: "Open the workspace list in compact mode."
+        case .compactOverflow: "Open less frequently used compact-mode actions."
+        case .sidebarSettings: "Open ApexTerm Settings from the sidebar."
+        case .sidebarNewWorkspace: "Create a new workspace."
+        case .expandLeftSidebar: "Expand or collapse the workspace sidebar."
+        case .remoteHostSettings: "Open remote-host connection settings."
+        case .expandRightSidebar: "Legacy control for the retired right sidebar."
+        case .rightRailHistory: "Legacy command-history shortcut from the right rail."
+        case .rightRailAgents: "Legacy Agent Runs shortcut from the right rail."
+        }
+    }
+
+    public var detailDescription: String {
+        switch self {
+        case .newTab: "Adds a local shell to the current workspace. Its context menu can also create other supported session types."
+        case .remoteHostLaunch: "Shows configured SSH and remote-host destinations so you can open a remote terminal without typing the connection command manually."
+        case .tmuxManager: "Opens the tmux session manager for discovering, attaching to, and managing persistent terminal sessions."
+        case .tabBarPinWindow, .toolbarPinWindow: "Pins the main ApexTerm window above normal application windows until you turn the option off again."
+        case .compactMode: "Switches the main window to a denser layout that gives more room to terminal content and reduces surrounding UI."
+        case .tabCloseButtons: "Controls whether the selected terminal tab shows its close button. Inactive tabs stay visually quieter."
+        case .tabSeparators: "Adds subtle dividers between terminal tabs when you want stronger visual boundaries in dense columns."
+        case .toggleLeftSidebar: "Kept for settings migration. The current interface opens and closes the workspace sidebar from the sidebar itself."
+        case .commandPalette: "Provides a keyboard-friendly searchable list of ApexTerm commands, useful when you know what you want to do but not where the control lives."
+        case .findTerminal, .compactFind: "Searches the visible terminal buffer for text without leaving the current terminal workflow."
+        case .quickTerminal: "Opens a separate lightweight terminal window for short commands without changing the main workspace layout."
+        case .historySearch, .compactHistorySearch: "Searches recorded command history across the current ApexTerm data so you can reuse or inspect earlier commands."
+        case .copyContextPack: "Copies a bounded context bundle from the selected terminal so it can be pasted into another tool or conversation with useful surrounding information."
+        case .openFailureInAgent: "Prepares the most recent failed command and related context in Agent Chat so the failure can be investigated without manual copying."
+        case .toggleCommandHistory: "Retained for older layouts. Command-history search now has its own action instead of a persistent history sidebar."
+        case .splitVertical: "Retained for older layouts. New left or right columns are now created from each column's + context menu."
+        case .splitHorizontal: "Retained for older layouts. New columns above or below are now created from each column's + context menu."
+        case .closePane: "Closes the selected terminal tab. Because active tabs also expose an inline ×, this top-bar action is optional for many workflows."
+        case .maximizePane: "Temporarily gives the selected terminal column the available content area, then restores the previous multi-column layout."
+        case .toggleRightSidebar: "The persistent right sidebar was removed from the current interface. This identifier remains only for compatibility with older saved settings."
+        case .compactWorkspaces: "Shows the workspace selector when the main workspace sidebar is hidden by a compact window layout."
+        case .compactOverflow: "Collects secondary actions into one menu when compact mode does not have enough room to show every control individually."
+        case .sidebarSettings: "Opens the Settings window directly from the workspace sidebar."
+        case .sidebarNewWorkspace: "Creates another workspace and makes it available in the workspace sidebar."
+        case .expandLeftSidebar: "Expands the compact workspace rail into the full sidebar, or collapses it back to save horizontal space."
+        case .remoteHostSettings: "Opens the screen used to add, edit, hide, or remove remote-host connection profiles."
+        case .expandRightSidebar: "Retained only for compatibility with the retired right-sidebar layout."
+        case .rightRailHistory: "Retained only for compatibility with the retired right rail. Command-history search remains available elsewhere."
+        case .rightRailAgents: "Retained only for compatibility with the retired right rail. Agent workflows remain available through current Agent Chat surfaces."
+        }
+    }
+
+    public var isLegacy: Bool {
+        switch self {
+        case .toggleLeftSidebar, .toggleCommandHistory, .toolbarPinWindow,
+             .splitVertical, .splitHorizontal, .toggleRightSidebar,
+             .expandRightSidebar, .rightRailHistory, .rightRailAgents:
+            true
+        default:
+            false
+        }
+    }
+
+    public var placementTitle: String {
+        if isLegacy { return "Legacy" }
+        if isTopBarReorderable { return "Top Bar" }
+        return zone.title
+    }
+
+    public var recommendation: UIControlRecommendation {
+        if isLegacy { return .low }
+        switch self {
+        case .newTab, .commandPalette, .findTerminal, .historySearch, .maximizePane:
+            return .high
+        case .remoteHostLaunch, .tmuxManager, .compactMode, .quickTerminal,
+             .openFailureInAgent, .compactWorkspaces, .compactFind,
+             .compactHistorySearch, .compactOverflow, .sidebarSettings,
+             .sidebarNewWorkspace, .expandLeftSidebar, .remoteHostSettings:
+            return .medium
+        case .tabBarPinWindow, .tabCloseButtons, .tabSeparators,
+             .copyContextPack, .closePane:
+            return .low
+        case .toggleLeftSidebar, .toggleCommandHistory, .toolbarPinWindow,
+             .splitVertical, .splitHorizontal, .toggleRightSidebar,
+             .expandRightSidebar, .rightRailHistory, .rightRailAgents:
+            return .low
         }
     }
 
