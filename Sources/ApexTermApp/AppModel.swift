@@ -55,7 +55,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var tmuxActionMessage: String?
     @Published var isSettingsPresented = false
     @Published var settingsTab: AppSettingsTab = .general
-    @Published var terminalTitle = "Local Shell"
+    @Published var terminalTitle = "01"
     @Published var currentDirectory: String?
     @Published var isAgentRailVisible = true
     @Published var isCommandPalettePresented = false
@@ -2365,7 +2365,7 @@ final class AppModel: ObservableObject {
     }
 
     func updateTerminalTitle(_ title: String, sessionID: UUID? = nil) {
-        let resolvedTitle = title.isEmpty ? "Local Shell" : title
+        let resolvedTitle = title.isEmpty ? LocalShellNaming.title(number: 1) : title
         guard let targetID = sessionID ?? selectedSessionID,
               let index = sessions.firstIndex(where: { $0.id == targetID }) else {
             return
@@ -2884,7 +2884,7 @@ final class AppModel: ObservableObject {
     }
 
     func sessionTitle(for id: UUID) -> String {
-        session(id: id)?.title ?? "Local Shell"
+        session(id: id)?.title ?? LocalShellNaming.title(number: 1)
     }
 
     func performAction(id: String) {

@@ -208,6 +208,14 @@ public enum SplitTreeOperations {
         if sourceColumn.id == targetColumn.id {
             return selectingSession(sourceSessionID, in: node)
         }
+        if sourceColumn.sessionIDs.count == 1,
+           let merged = mergingSingleSessionColumn(
+               sourceSessionID,
+               into: targetSessionID,
+               in: node
+           ) {
+            return merged
+        }
         guard let reduced = removing(sessionID: sourceSessionID, from: node),
               contains(sessionID: targetSessionID, in: reduced) else {
             return node
@@ -249,7 +257,7 @@ public enum SplitTreeOperations {
             return node
         }
         let clampedRatio = min(0.9, max(0.1, ratio))
-        let result = replacingLeaf(containing: sessionID, in: node) { existingLeaf in
+        return replacingLeaf(containing: sessionID, in: node) { existingLeaf in
             let existing = normalizedColumns(in: existingLeaf)
             let inserted = SplitNode.column(TerminalColumn(sessionID: newSessionID))
             return .split(
@@ -259,9 +267,6 @@ public enum SplitTreeOperations {
                 second: newPaneFirst ? existing : inserted
             )
         }.node
-        return horizontalSpanUnits(in: result) == horizontalSpanUnits(in: node)
-            ? result
-            : rebalancedColumnWidths(in: result)
     }
 
     public static func inserting(
@@ -276,7 +281,7 @@ public enum SplitTreeOperations {
             return node
         }
         let clampedRatio = min(0.9, max(0.1, ratio))
-        let result = replacingLeaf(containing: sessionID, in: node) { existingLeaf in
+        return replacingLeaf(containing: sessionID, in: node) { existingLeaf in
             let existing = normalizedColumns(in: existingLeaf)
             return .split(
                 axis: axis,
@@ -285,9 +290,6 @@ public enum SplitTreeOperations {
                 second: newPaneFirst ? existing : normalizedColumns(in: subtree)
             )
         }.node
-        return horizontalSpanUnits(in: result) == horizontalSpanUnits(in: node)
-            ? result
-            : rebalancedColumnWidths(in: result)
     }
 
     public static func replacing(
@@ -350,71 +352,6 @@ public enum SplitTreeOperations {
     }
 
     public static func removing(sessionID: UUID, from node: SplitNode) -> SplitNode? {
-        guard let result = removingWithoutRebalancing(sessionID: sessionID, from: node) else {
-            return nil
-        }
-        return horizontalSpanUnits(in: result) == horizontalSpanUnits(in: node)
-            ? result
-            : rebalancedColumnWidths(in: result)
-    }
-
-    public static func paneCount(in node: SplitNode) -> Int {
-        columnCount(in: node)
-    }
-
-    public static func columnCount(in node: SplitNode) -> Int {
-        switch node {
-        case .pane, .column:
-            return 1
-        case let .split(_, _, first, second):
-            return columnCount(in: first) + columnCount(in: second)
-        }
-    }
-
-    public static func rebalancedColumnWidths(in node: SplitNode) -> SplitNode {
-        switch node {
-        case .pane, .column:
-            return node
-        case let .split(axis, ratio, first, second):
-            let balancedFirst = rebalancedColumnWidths(in: first)
-            let balancedSecond = rebalancedColumnWidths(in: second)
-            guard axis == .vertical else {
-                return .split(
-                    axis: axis,
-                    ratio: ratio,
-                    first: balancedFirst,
-                    second: balancedSecond
-                )
-            }
-            let firstUnits = horizontalSpanUnits(in: balancedFirst)
-            let secondUnits = horizontalSpanUnits(in: balancedSecond)
-            let totalUnits = max(1, firstUnits + secondUnits)
-            return .split(
-                axis: axis,
-                ratio: Double(firstUnits) / Double(totalUnits),
-                first: balancedFirst,
-                second: balancedSecond
-            )
-        }
-    }
-
-    private static func horizontalSpanUnits(in node: SplitNode) -> Int {
-        switch node {
-        case .pane, .column:
-            return 1
-        case let .split(axis, _, first, second):
-            let firstUnits = horizontalSpanUnits(in: first)
-            let secondUnits = horizontalSpanUnits(in: second)
-            return axis == .vertical
-                ? firstUnits + secondUnits
-                : max(firstUnits, secondUnits)
-        }
-    }
-
-    private static func removingWithoutRebalancing(
-        sessionID: UUID,
-        from node: SplitNode
-    ) -> SplitNode? {
         switch node {
         case let .pane(existingID):
             return existingID == sessionID ? nil : node
@@ -430,8 +367,8 @@ public enum SplitTreeOperations {
             }
             return .column(column)
         case let .split(axis, ratio, first, second):
-            let newFirst = removingWithoutRebalancing(sessionID: sessionID, from: first)
-            let newSecond = removingWithoutRebalancing(sessionID: sessionID, from: second)
+            let newFirst = removing(sessionID: sessionID, from: first)
+            let newSecond = removing(sessionID: sessionID, from: second)
 
             switch (newFirst, newSecond) {
             case let (first?, second?):
@@ -443,6 +380,142 @@ public enum SplitTreeOperations {
             case (nil, nil):
                 return nil
             }
+        }
+    }
+
+    public static func paneCount(in node: SplitNode) -> Int {
+        columnCount(in: node)
+    }
+
+    public static func columnCount(in node: SplitNode) -> Int {
+        switch node {
+        case .pane, .column:
+            return 1
+        case let .split(_, _, first, second):
+            return columnCount(in: first) + columnCount(in: second)
+        }
+    }
+
+    private struct WeightedSubtree {
+        var node: SplitNode
+        var weight: Double
+    }
+
+    private static func mergingSingleSessionColumn(
+        _ sourceSessionID: UUID,
+        into targetSessionID: UUID,
+        in node: SplitNode
+    ) -> SplitNode? {
+        guard case let .split(axis, _, _, _) = node else { return nil }
+        var segments = weightedSegments(in: node, axis: axis)
+        guard let sourceIndex = segments.firstIndex(where: {
+                  contains(sessionID: sourceSessionID, in: $0.node)
+              }),
+              let targetIndex = segments.firstIndex(where: {
+                  contains(sessionID: targetSessionID, in: $0.node)
+              }) else {
+            return nil
+        }
+
+        if sourceIndex == targetIndex {
+            guard let nested = mergingSingleSessionColumn(
+                sourceSessionID,
+                into: targetSessionID,
+                in: segments[sourceIndex].node
+            ) else {
+                return nil
+            }
+            segments[sourceIndex].node = nested
+            return rebuildingWeightedSegments(segments, axis: axis)
+        }
+
+        guard isTerminalColumnLeaf(segments[sourceIndex].node, containing: sourceSessionID),
+              isTerminalColumnLeaf(segments[targetIndex].node, containing: targetSessionID) else {
+            return nil
+        }
+
+        let updatedTarget = addingSession(
+            sourceSessionID,
+            toColumnContaining: targetSessionID,
+            select: true,
+            in: segments[targetIndex].node
+        )
+        guard updatedTarget != segments[targetIndex].node else { return nil }
+
+        let absorbedWeight = segments[sourceIndex].weight
+        segments[targetIndex].node = updatedTarget
+        segments[targetIndex].weight += absorbedWeight
+        segments.remove(at: sourceIndex)
+        return rebuildingWeightedSegments(segments, axis: axis)
+    }
+
+    private static func weightedSegments(
+        in node: SplitNode,
+        axis: SplitNode.SplitAxis
+    ) -> [WeightedSubtree] {
+        var result: [WeightedSubtree] = []
+        appendWeightedSegments(from: node, axis: axis, weight: 1, to: &result)
+        return result
+    }
+
+    private static func appendWeightedSegments(
+        from node: SplitNode,
+        axis: SplitNode.SplitAxis,
+        weight: Double,
+        to result: inout [WeightedSubtree]
+    ) {
+        guard case let .split(nodeAxis, ratio, first, second) = node,
+              nodeAxis == axis else {
+            result.append(WeightedSubtree(node: node, weight: weight))
+            return
+        }
+        let boundedRatio = min(0.95, max(0.05, ratio))
+        appendWeightedSegments(
+            from: first,
+            axis: axis,
+            weight: weight * boundedRatio,
+            to: &result
+        )
+        appendWeightedSegments(
+            from: second,
+            axis: axis,
+            weight: weight * (1 - boundedRatio),
+            to: &result
+        )
+    }
+
+    private static func rebuildingWeightedSegments(
+        _ segments: [WeightedSubtree],
+        axis: SplitNode.SplitAxis
+    ) -> SplitNode? {
+        guard var accumulated = segments.first else { return nil }
+        for segment in segments.dropFirst() {
+            let total = accumulated.weight + segment.weight
+            guard total > 0 else { continue }
+            accumulated = WeightedSubtree(
+                node: .split(
+                    axis: axis,
+                    ratio: accumulated.weight / total,
+                    first: accumulated.node,
+                    second: segment.node
+                ),
+                weight: total
+            )
+        }
+        return accumulated.node
+    }
+
+    private static func isTerminalColumnLeaf(
+        _ node: SplitNode,
+        containing sessionID: UUID
+    ) -> Bool {
+        switch node {
+        case let .pane(existingID):
+            return existingID == sessionID
+        case let .column(column):
+            return column.sessionIDs.contains(sessionID)
+        case .split:
+            return false
         }
     }
 

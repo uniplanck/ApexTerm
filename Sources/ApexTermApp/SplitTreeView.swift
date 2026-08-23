@@ -57,6 +57,137 @@ private struct NativeColumnAddTabButton: NSViewRepresentable {
     }
 }
 
+private struct NativeRatioSplitView: NSViewRepresentable {
+    let isVertical: Bool
+    let ratio: CGFloat
+    let layoutKey: String
+    let first: AnyView
+    let second: AnyView
+
+    func makeNSView(context: Context) -> RatioSplitContainerView {
+        let view = RatioSplitContainerView(frame: .zero)
+        view.configure(
+            isVertical: isVertical,
+            ratio: ratio,
+            layoutKey: layoutKey,
+            first: first,
+            second: second
+        )
+        return view
+    }
+
+    func updateNSView(_ nsView: RatioSplitContainerView, context: Context) {
+        nsView.configure(
+            isVertical: isVertical,
+            ratio: ratio,
+            layoutKey: layoutKey,
+            first: first,
+            second: second
+        )
+    }
+
+    @MainActor
+    final class RatioSplitContainerView: NSView, NSSplitViewDelegate {
+        private let splitView = NSSplitView(frame: .zero)
+        private let firstHost = NSHostingView(rootView: AnyView(EmptyView()))
+        private let secondHost = NSHostingView(rootView: AnyView(EmptyView()))
+        private var requestedRatio: CGFloat = 0.5
+        private var requestedKey = ""
+        private var appliedKey: String?
+        private var applyScheduled = false
+
+        override init(frame frameRect: NSRect) {
+            super.init(frame: frameRect)
+            splitView.dividerStyle = .thin
+            splitView.delegate = self
+            splitView.addSubview(firstHost)
+            splitView.addSubview(secondHost)
+            addSubview(splitView)
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) {
+            fatalError("init(coder:) has not been implemented")
+        }
+
+        func configure(
+            isVertical: Bool,
+            ratio: CGFloat,
+            layoutKey: String,
+            first: AnyView,
+            second: AnyView
+        ) {
+            firstHost.rootView = first
+            secondHost.rootView = second
+            requestedRatio = min(0.95, max(0.05, ratio))
+            if splitView.isVertical != isVertical {
+                splitView.isVertical = isVertical
+                appliedKey = nil
+            }
+            if requestedKey != layoutKey {
+                requestedKey = layoutKey
+                appliedKey = nil
+            }
+            needsLayout = true
+            splitView.needsLayout = true
+            scheduleApply()
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            scheduleApply()
+        }
+
+        override func layout() {
+            super.layout()
+            splitView.frame = bounds
+            splitView.adjustSubviews()
+            applyRatioIfNeeded()
+        }
+
+        private func scheduleApply() {
+            guard window != nil,
+                  appliedKey != requestedKey,
+                  !applyScheduled else {
+                return
+            }
+            applyScheduled = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.applyScheduled = false
+                self.needsLayout = true
+                self.layoutSubtreeIfNeeded()
+                self.applyRatioIfNeeded()
+            }
+        }
+
+        private func applyRatioIfNeeded() {
+            guard appliedKey != requestedKey,
+                  splitView.subviews.count >= 2 else {
+                return
+            }
+            let total = splitView.isVertical ? splitView.bounds.width : splitView.bounds.height
+            guard total > splitView.dividerThickness else {
+                scheduleApply()
+                return
+            }
+            splitView.setPosition(total * requestedRatio, ofDividerAt: 0)
+            appliedKey = requestedKey
+        }
+
+        func splitView(
+            _ splitView: NSSplitView,
+            constrainSplitPosition proposedPosition: CGFloat,
+            ofSubviewAt dividerIndex: Int
+        ) -> CGFloat {
+            let minimum: CGFloat = splitView.isVertical ? 120 : 100
+            let total = splitView.isVertical ? splitView.bounds.width : splitView.bounds.height
+            let maximum = max(minimum, total - minimum - splitView.dividerThickness)
+            return min(maximum, max(minimum, proposedPosition))
+        }
+    }
+}
+
 private struct CommandTranscriptModeCycleButton: NSViewRepresentable {
     @Binding var mode: CommandTranscriptMode
 
@@ -259,7 +390,14 @@ struct SplitTreeView: View {
         isSelected: Bool,
         isColumnFocused: Bool
     ) -> some View {
-        HStack(spacing: 6) {
+        let tabWidth: CGFloat = if session.kind == .local
+            && LocalShellNaming.isAutomaticTitle(session.title) {
+            80
+        } else {
+            168
+        }
+
+        return HStack(spacing: 6) {
             Image(systemName: "circle.grid.2x2")
                 .font(.system(size: 8, weight: .medium))
                 .foregroundStyle(.tertiary)
@@ -281,7 +419,7 @@ struct SplitTreeView: View {
             .help("Close terminal tab")
         }
         .padding(.horizontal, 8)
-        .frame(width: 168, height: 28)
+        .frame(width: tabWidth, height: 28)
         .contentShape(Rectangle())
         .background(
             isSelected
@@ -323,7 +461,7 @@ struct SplitTreeView: View {
             of: [.apexTermTerminalTab],
             delegate: TerminalTabDropDelegate(
                 targetSessionID: session.id,
-                width: 168,
+                width: tabWidth,
                 indicator: $terminalTabDropIndicator
             ) { payload, targetSessionID, after in
                 guard let sourceSessionID = payload.workspacePaneSessionID else { return }
@@ -706,65 +844,57 @@ struct SplitTreeView: View {
         .accessibilityLabel("定型コマンドを送信")
     }
 
-    @ViewBuilder
     private func splitView(
         axis: SplitNode.SplitAxis,
         ratio: Double,
         first: SplitNode,
         second: SplitNode
     ) -> some View {
-        GeometryReader { proxy in
-            if axis == .vertical {
-                let children = flattenedVerticalChildren(first: first, second: second)
-                let idealWidth = max(
-                    180,
-                    proxy.size.width / CGFloat(max(1, children.count))
+        let clampedRatio = min(max(ratio, 0.05), 0.95)
+        let layoutKey = splitLayoutKey(
+            axis: axis,
+            ratio: clampedRatio,
+            first: first,
+            second: second
+        )
+        let firstView = AnyView(
+            SplitTreeView(workspaceID: workspaceID, node: first, model: model)
+                .frame(
+                    minWidth: axis == .vertical ? 120 : nil,
+                    minHeight: axis == .horizontal ? 100 : nil
                 )
-                HSplitView {
-                    ForEach(children.indices, id: \.self) { index in
-                        SplitTreeView(
-                            workspaceID: workspaceID,
-                            node: children[index],
-                            model: model
-                        )
-                        .frame(
-                            minWidth: 180,
-                            idealWidth: idealWidth,
-                            maxWidth: .infinity
-                        )
-                    }
-                }
-            } else {
-                let clampedRatio = min(max(ratio, 0.05), 0.95)
-                VSplitView {
-                    SplitTreeView(workspaceID: workspaceID, node: first, model: model)
-                        .frame(
-                            minHeight: 140,
-                            idealHeight: max(140, proxy.size.height * clampedRatio)
-                        )
-                    SplitTreeView(workspaceID: workspaceID, node: second, model: model)
-                        .frame(
-                            minHeight: 140,
-                            idealHeight: max(140, proxy.size.height * (1 - clampedRatio))
-                        )
-                }
-            }
-        }
+        )
+        let secondView = AnyView(
+            SplitTreeView(workspaceID: workspaceID, node: second, model: model)
+                .frame(
+                    minWidth: axis == .vertical ? 120 : nil,
+                    minHeight: axis == .horizontal ? 100 : nil
+                )
+        )
+        return NativeRatioSplitView(
+            isVertical: axis == .vertical,
+            ratio: CGFloat(clampedRatio),
+            layoutKey: layoutKey,
+            first: firstView,
+            second: secondView
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func flattenedVerticalChildren(
+    private func splitLayoutKey(
+        axis: SplitNode.SplitAxis,
+        ratio: Double,
         first: SplitNode,
         second: SplitNode
-    ) -> [SplitNode] {
-        flattenedVerticalChildren(in: first) + flattenedVerticalChildren(in: second)
-    }
-
-    private func flattenedVerticalChildren(in node: SplitNode) -> [SplitNode] {
-        guard case let .split(axis, _, first, second) = node,
-              axis == .vertical else {
-            return [node]
-        }
-        return flattenedVerticalChildren(in: first) + flattenedVerticalChildren(in: second)
+    ) -> String {
+        let axisKey = axis == .vertical ? "v" : "h"
+        let firstIDs = SplitTreeOperations.sessionIDs(in: first)
+            .map(\.uuidString)
+            .joined(separator: ",")
+        let secondIDs = SplitTreeOperations.sessionIDs(in: second)
+            .map(\.uuidString)
+            .joined(separator: ",")
+        return "\(axisKey):\(ratio):\(SplitTreeOperations.columnCount(in: first)):\(firstIDs)|\(SplitTreeOperations.columnCount(in: second)):\(secondIDs)"
     }
 
     private func livePaneHeightKey(for sessionID: UUID) -> String {

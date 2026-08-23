@@ -152,7 +152,7 @@ struct NativePaneDragHandle: NSViewRepresentable {
 @MainActor
 final class NativePaneDragHandleView: NSView, NSDraggingSource {
     private var sessionID = UUID()
-    private var paneTitle = "Local Shell"
+    private var paneTitle = "01"
     private var onSelect: @MainActor () -> Void = {}
     private var onRename: @MainActor () -> Void = {}
     private var mouseDownPoint: NSPoint?

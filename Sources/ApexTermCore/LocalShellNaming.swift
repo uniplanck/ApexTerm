@@ -1,13 +1,21 @@
 import Foundation
 
 public enum LocalShellNaming {
+    /// Legacy automatic title retained only so existing workspaces migrate cleanly.
     public static let baseTitle = "Local Shell"
 
     public static func title(number: Int) -> String {
-        "\(baseTitle) (\(String(format: "%02d", max(1, number))))"
+        String(format: "%02d", max(1, number))
     }
 
     public static func automaticNumber(in title: String) -> Int? {
+        if !title.isEmpty,
+           title.allSatisfy(\.isNumber),
+           let number = Int(title),
+           number > 0 {
+            return number
+        }
+
         let prefix = "\(baseTitle) ("
         guard title.hasPrefix(prefix), title.hasSuffix(")") else { return nil }
 

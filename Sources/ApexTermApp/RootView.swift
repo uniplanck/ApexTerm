@@ -2302,7 +2302,7 @@ struct RootView: View {
                 in: numberedWorkspace.layout
            ).first {
             localShellInitialNumberPassed = model.session(id: firstSessionID)?.title
-                == "Local Shell (01)"
+                == "01"
             model.splitSession(id: firstSessionID, axis: .vertical)
 
             if let twoPaneWorkspace = model.workspaces.first(where: {
@@ -2311,10 +2311,10 @@ struct RootView: View {
                 let twoPaneIDs = SplitTreeOperations.sessionIDs(in: twoPaneWorkspace.layout)
                 let twoPaneTitles = twoPaneIDs.compactMap { model.session(id: $0)?.title }
                 localShellSequentialNumberPassed = Set(twoPaneTitles)
-                    == Set(["Local Shell (01)", "Local Shell (02)"])
+                    == Set(["01", "02"])
 
                 if let secondSessionID = twoPaneIDs.first(where: {
-                    model.session(id: $0)?.title == "Local Shell (02)"
+                    model.session(id: $0)?.title == "02"
                 }) {
                     model.splitSession(id: secondSessionID, axis: .horizontal)
                     model.closeSession(id: secondSessionID)
@@ -2328,11 +2328,11 @@ struct RootView: View {
                 let titles = SplitTreeOperations.sessionIDs(in: gapWorkspace.layout)
                     .compactMap { model.session(id: $0)?.title }
                 localShellGapReusePassed = titles.count == 3
-                    && titles.filter { $0 == "Local Shell (02)" }.count == 1
+                    && titles.filter { $0 == "02" }.count == 1
                     && Set(titles) == Set([
-                        "Local Shell (01)",
-                        "Local Shell (02)",
-                        "Local Shell (03)"
+                        "01",
+                        "02",
+                        "03"
                     ])
             }
 

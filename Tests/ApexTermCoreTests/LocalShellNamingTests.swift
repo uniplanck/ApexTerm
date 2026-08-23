@@ -2,10 +2,10 @@ import XCTest
 @testable import ApexTermCore
 
 final class LocalShellNamingTests: XCTestCase {
-    func testTitleUsesTwoDigitMinimum() {
-        XCTAssertEqual(LocalShellNaming.title(number: 1), "Local Shell (01)")
-        XCTAssertEqual(LocalShellNaming.title(number: 12), "Local Shell (12)")
-        XCTAssertEqual(LocalShellNaming.title(number: 123), "Local Shell (123)")
+    func testTitleUsesCompactTwoDigitMinimum() {
+        XCTAssertEqual(LocalShellNaming.title(number: 1), "01")
+        XCTAssertEqual(LocalShellNaming.title(number: 12), "12")
+        XCTAssertEqual(LocalShellNaming.title(number: 123), "123")
     }
 
     func testNextAvailableNumberReusesFirstGap() {
@@ -27,12 +27,21 @@ final class LocalShellNamingTests: XCTestCase {
                 "Local Shell (02)"
             ]),
             [
-                "Local Shell (01)",
-                "Local Shell (03)",
+                "01",
+                "03",
                 "Build",
-                "Local Shell (02)",
-                "Local Shell (04)"
+                "02",
+                "04"
             ]
+        )
+    }
+
+    func testLegacyAndCompactAutomaticTitlesShareNumberSpace() {
+        XCTAssertEqual(LocalShellNaming.automaticNumber(in: "01"), 1)
+        XCTAssertEqual(LocalShellNaming.automaticNumber(in: "Local Shell (02)"), 2)
+        XCTAssertEqual(
+            LocalShellNaming.nextAvailableNumber(in: ["01", "Local Shell (02)", "04"]),
+            3
         )
     }
 
