@@ -249,7 +249,7 @@ public enum SplitTreeOperations {
             return node
         }
         let clampedRatio = min(0.9, max(0.1, ratio))
-        return replacingLeaf(containing: sessionID, in: node) { existingLeaf in
+        let result = replacingLeaf(containing: sessionID, in: node) { existingLeaf in
             let existing = normalizedColumns(in: existingLeaf)
             let inserted = SplitNode.column(TerminalColumn(sessionID: newSessionID))
             return .split(
@@ -259,6 +259,9 @@ public enum SplitTreeOperations {
                 second: newPaneFirst ? existing : inserted
             )
         }.node
+        return horizontalSpanUnits(in: result) == horizontalSpanUnits(in: node)
+            ? result
+            : rebalancedColumnWidths(in: result)
     }
 
     public static func inserting(
@@ -273,7 +276,7 @@ public enum SplitTreeOperations {
             return node
         }
         let clampedRatio = min(0.9, max(0.1, ratio))
-        return replacingLeaf(containing: sessionID, in: node) { existingLeaf in
+        let result = replacingLeaf(containing: sessionID, in: node) { existingLeaf in
             let existing = normalizedColumns(in: existingLeaf)
             return .split(
                 axis: axis,
@@ -282,6 +285,9 @@ public enum SplitTreeOperations {
                 second: newPaneFirst ? existing : normalizedColumns(in: subtree)
             )
         }.node
+        return horizontalSpanUnits(in: result) == horizontalSpanUnits(in: node)
+            ? result
+            : rebalancedColumnWidths(in: result)
     }
 
     public static func replacing(
@@ -344,6 +350,71 @@ public enum SplitTreeOperations {
     }
 
     public static func removing(sessionID: UUID, from node: SplitNode) -> SplitNode? {
+        guard let result = removingWithoutRebalancing(sessionID: sessionID, from: node) else {
+            return nil
+        }
+        return horizontalSpanUnits(in: result) == horizontalSpanUnits(in: node)
+            ? result
+            : rebalancedColumnWidths(in: result)
+    }
+
+    public static func paneCount(in node: SplitNode) -> Int {
+        columnCount(in: node)
+    }
+
+    public static func columnCount(in node: SplitNode) -> Int {
+        switch node {
+        case .pane, .column:
+            return 1
+        case let .split(_, _, first, second):
+            return columnCount(in: first) + columnCount(in: second)
+        }
+    }
+
+    public static func rebalancedColumnWidths(in node: SplitNode) -> SplitNode {
+        switch node {
+        case .pane, .column:
+            return node
+        case let .split(axis, ratio, first, second):
+            let balancedFirst = rebalancedColumnWidths(in: first)
+            let balancedSecond = rebalancedColumnWidths(in: second)
+            guard axis == .vertical else {
+                return .split(
+                    axis: axis,
+                    ratio: ratio,
+                    first: balancedFirst,
+                    second: balancedSecond
+                )
+            }
+            let firstUnits = horizontalSpanUnits(in: balancedFirst)
+            let secondUnits = horizontalSpanUnits(in: balancedSecond)
+            let totalUnits = max(1, firstUnits + secondUnits)
+            return .split(
+                axis: axis,
+                ratio: Double(firstUnits) / Double(totalUnits),
+                first: balancedFirst,
+                second: balancedSecond
+            )
+        }
+    }
+
+    private static func horizontalSpanUnits(in node: SplitNode) -> Int {
+        switch node {
+        case .pane, .column:
+            return 1
+        case let .split(axis, _, first, second):
+            let firstUnits = horizontalSpanUnits(in: first)
+            let secondUnits = horizontalSpanUnits(in: second)
+            return axis == .vertical
+                ? firstUnits + secondUnits
+                : max(firstUnits, secondUnits)
+        }
+    }
+
+    private static func removingWithoutRebalancing(
+        sessionID: UUID,
+        from node: SplitNode
+    ) -> SplitNode? {
         switch node {
         case let .pane(existingID):
             return existingID == sessionID ? nil : node
@@ -359,8 +430,8 @@ public enum SplitTreeOperations {
             }
             return .column(column)
         case let .split(axis, ratio, first, second):
-            let newFirst = removing(sessionID: sessionID, from: first)
-            let newSecond = removing(sessionID: sessionID, from: second)
+            let newFirst = removingWithoutRebalancing(sessionID: sessionID, from: first)
+            let newSecond = removingWithoutRebalancing(sessionID: sessionID, from: second)
 
             switch (newFirst, newSecond) {
             case let (first?, second?):
@@ -372,19 +443,6 @@ public enum SplitTreeOperations {
             case (nil, nil):
                 return nil
             }
-        }
-    }
-
-    public static func paneCount(in node: SplitNode) -> Int {
-        columnCount(in: node)
-    }
-
-    public static func columnCount(in node: SplitNode) -> Int {
-        switch node {
-        case .pane, .column:
-            return 1
-        case let .split(_, _, first, second):
-            return columnCount(in: first) + columnCount(in: second)
         }
     }
 

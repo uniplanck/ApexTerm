@@ -714,21 +714,28 @@ struct SplitTreeView: View {
         second: SplitNode
     ) -> some View {
         GeometryReader { proxy in
-            let clampedRatio = min(max(ratio, 0.2), 0.8)
             if axis == .vertical {
+                let children = flattenedVerticalChildren(first: first, second: second)
+                let idealWidth = max(
+                    180,
+                    proxy.size.width / CGFloat(max(1, children.count))
+                )
                 HSplitView {
-                    SplitTreeView(workspaceID: workspaceID, node: first, model: model)
+                    ForEach(children.indices, id: \.self) { index in
+                        SplitTreeView(
+                            workspaceID: workspaceID,
+                            node: children[index],
+                            model: model
+                        )
                         .frame(
                             minWidth: 180,
-                            idealWidth: max(180, proxy.size.width * clampedRatio)
+                            idealWidth: idealWidth,
+                            maxWidth: .infinity
                         )
-                    SplitTreeView(workspaceID: workspaceID, node: second, model: model)
-                        .frame(
-                            minWidth: 180,
-                            idealWidth: max(180, proxy.size.width * (1 - clampedRatio))
-                        )
+                    }
                 }
             } else {
+                let clampedRatio = min(max(ratio, 0.05), 0.95)
                 VSplitView {
                     SplitTreeView(workspaceID: workspaceID, node: first, model: model)
                         .frame(
@@ -743,6 +750,21 @@ struct SplitTreeView: View {
                 }
             }
         }
+    }
+
+    private func flattenedVerticalChildren(
+        first: SplitNode,
+        second: SplitNode
+    ) -> [SplitNode] {
+        flattenedVerticalChildren(in: first) + flattenedVerticalChildren(in: second)
+    }
+
+    private func flattenedVerticalChildren(in node: SplitNode) -> [SplitNode] {
+        guard case let .split(axis, _, first, second) = node,
+              axis == .vertical else {
+            return [node]
+        }
+        return flattenedVerticalChildren(in: first) + flattenedVerticalChildren(in: second)
     }
 
     private func livePaneHeightKey(for sessionID: UUID) -> String {

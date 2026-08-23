@@ -171,6 +171,81 @@ final class SplitTreeOperationsTests: XCTestCase {
         XCTAssertEqual(SplitTreeOperations.column(containing: newSession, in: result)?.sessionIDs, [newSession])
     }
 
+    func testThirdSideBySideColumnRebalancesToEqualWidths() {
+        let first = UUID()
+        let second = UUID()
+        let third = UUID()
+        let root = SplitNode.split(
+            axis: .vertical,
+            ratio: 0.5,
+            first: .column(TerminalColumn(sessionID: first)),
+            second: .column(TerminalColumn(sessionID: second))
+        )
+
+        let result = SplitTreeOperations.inserting(
+            subtree: .column(TerminalColumn(sessionID: third)),
+            at: first,
+            axis: .vertical,
+            newPaneFirst: false,
+            in: root
+        )
+
+        guard case let .split(.vertical, outerRatio, nested, _) = result,
+              case let .split(.vertical, innerRatio, _, _) = nested else {
+            return XCTFail("Expected three side-by-side columns")
+        }
+        XCTAssertEqual(outerRatio, 2.0 / 3.0, accuracy: 0.000_001)
+        XCTAssertEqual(innerRatio, 0.5, accuracy: 0.000_001)
+    }
+
+    func testRemovingSideBySideColumnRebalancesRemainingWidths() {
+        let first = UUID()
+        let second = UUID()
+        let third = UUID()
+        let threeColumns = SplitNode.split(
+            axis: .vertical,
+            ratio: 2.0 / 3.0,
+            first: .split(
+                axis: .vertical,
+                ratio: 0.5,
+                first: .column(TerminalColumn(sessionID: first)),
+                second: .column(TerminalColumn(sessionID: third))
+            ),
+            second: .column(TerminalColumn(sessionID: second))
+        )
+
+        let result = SplitTreeOperations.removing(sessionID: third, from: threeColumns)
+
+        guard case let .split(.vertical, ratio, _, _) = try! XCTUnwrap(result) else {
+            return XCTFail("Expected two remaining side-by-side columns")
+        }
+        XCTAssertEqual(ratio, 0.5, accuracy: 0.000_001)
+    }
+
+    func testHorizontalSplitPreservesExistingSideBySideRatio() {
+        let first = UUID()
+        let second = UUID()
+        let third = UUID()
+        let root = SplitNode.split(
+            axis: .vertical,
+            ratio: 0.7,
+            first: .column(TerminalColumn(sessionID: first)),
+            second: .column(TerminalColumn(sessionID: second))
+        )
+
+        let result = SplitTreeOperations.split(
+            sessionID: first,
+            newSessionID: third,
+            axis: .horizontal,
+            in: root
+        )
+
+        guard case let .split(.vertical, ratio, _, _) = result else {
+            return XCTFail("Expected existing side-by-side split")
+        }
+        XCTAssertEqual(ratio, 0.7, accuracy: 0.000_001)
+    }
+
     func testNestedSplitTargetsOnlyRequestedColumn() {
         let first = UUID()
         let second = UUID()

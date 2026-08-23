@@ -147,6 +147,37 @@ wait_for_layout_change() {
   return 1
 }
 
+wait_for_balanced_target_widths() {
+  local probe="$1"
+  local first_id="$2"
+  local second_id="$3"
+  local third_id="$4"
+  for _ in {1..160}; do
+    if jq -e \
+      --arg first "$first_id" \
+      --arg second "$second_id" \
+      --arg third "$third_id" \
+      '([
+          .targets[$first].width,
+          .targets[$second].width,
+          .targets[$third].width
+        ] | select(all(. != null))) as $widths
+       | (($widths | max) - ($widths | min)) <= 24' \
+      "$probe" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.05
+  done
+  print -u2 -r -- "BALANCED_WIDTHS_TIMEOUT first=$first_id second=$second_id third=$third_id"
+  jq -c \
+    --arg first "$first_id" \
+    --arg second "$second_id" \
+    --arg third "$third_id" \
+    '{first: .targets[$first], second: .targets[$second], third: .targets[$third]}' \
+    "$probe" >&2 2>/dev/null || true
+  return 1
+}
+
 drag_and_wait_for_layout_change() {
   local file="$1"
   local before="$2"
@@ -255,11 +286,17 @@ run_case() {
           [[ "$nested_axis" == vertical ]]
           [[ "$(print -r -- "$nested_first" | jq -r '.sessionIDs[0]')" == "$extra_right_id" ]]
           [[ "$(print -r -- "$nested_second" | jq -r '.sessionIDs[0]')" == "$first_id" ]]
+          wait_for_balanced_target_widths \
+            "$drag_probe" "$extra_right_id" "$first_id" "$base_right_id"
+          printf 'TERMINAL_COLUMN_BALANCED_WIDTHS_LEFT_E2E=PASS\n'
           ;;
         right)
           [[ "$nested_axis" == vertical ]]
           [[ "$(print -r -- "$nested_first" | jq -r '.sessionIDs[0]')" == "$first_id" ]]
           [[ "$(print -r -- "$nested_second" | jq -r '.sessionIDs[0]')" == "$extra_right_id" ]]
+          wait_for_balanced_target_widths \
+            "$drag_probe" "$first_id" "$extra_right_id" "$base_right_id"
+          printf 'TERMINAL_COLUMN_BALANCED_WIDTHS_RIGHT_E2E=PASS\n'
           ;;
         top)
           [[ "$nested_axis" == horizontal ]]
@@ -335,7 +372,10 @@ run_same_column_left_case() {
   [[ "$(print -r -- "$final_right" | jq -r '.sessionIDs[0]')" == "$base_right_id" ]]
   jq -e --arg id "$extra_right_id" '.events | index("region:" + $id + ":left") != null' "$drag_probe" >/dev/null
   jq -e --arg id "$extra_right_id" '.events | index("drop:" + $id + ":" + $id + ":left") != null' "$drag_probe" >/dev/null
+  wait_for_balanced_target_widths \
+    "$drag_probe" "$extra_right_id" "$first_id" "$base_right_id"
   printf 'TERMINAL_COLUMN_SAME_COLUMN_LEFT_EDGE_E2E=PASS\n'
+  printf 'TERMINAL_COLUMN_BALANCED_WIDTHS_SAME_LEFT_E2E=PASS\n'
 
   terminate_current_process
   rm -rf "${support:h}" 2>/dev/null || true
