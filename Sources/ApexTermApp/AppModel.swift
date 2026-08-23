@@ -2730,6 +2730,17 @@ final class AppModel: ObservableObject {
             : selectedSessionID
     }
 
+    func selectAdjacentTerminalTab(offset: Int) {
+        guard offset != 0,
+              let workspace = selectedWorkspace else { return }
+        let ids = SplitTreeOperations.visualSessionIDs(in: workspace.layout)
+        guard !ids.isEmpty else { return }
+        let fallbackIndex = offset > 0 ? -1 : 0
+        let currentIndex = selectedSessionID.flatMap { ids.firstIndex(of: $0) } ?? fallbackIndex
+        let nextIndex = (currentIndex + offset % ids.count + ids.count) % ids.count
+        selectSession(ids[nextIndex])
+    }
+
     func selectAdjacentPane(offset: Int) {
         guard offset != 0,
               let workspace = selectedWorkspace else { return }
@@ -2963,6 +2974,10 @@ final class AppModel: ObservableObject {
             selectAdjacentMainTab(offset: 1)
         case "tab.previous":
             selectAdjacentMainTab(offset: -1)
+        case "terminal.tab.next":
+            selectAdjacentTerminalTab(offset: 1)
+        case "terminal.tab.previous":
+            selectAdjacentTerminalTab(offset: -1)
         case "tab.moveLeft":
             moveSelectedMainTab(offset: -1)
         case "tab.moveRight":

@@ -241,6 +241,20 @@ public struct ApexActionRegistry: Sendable {
             systemImage: "arrow.left.to.line"
         ),
         ApexActionDescriptor(
+            id: "terminal.tab.next",
+            title: "Next Terminal Tab",
+            subtitle: "Select the next terminal tab from top to bottom, then left to right",
+            keywords: ["terminal", "tab", "next", "cycle", "次", "下", "右"],
+            systemImage: "arrow.down.right.square"
+        ),
+        ApexActionDescriptor(
+            id: "terminal.tab.previous",
+            title: "Previous Terminal Tab",
+            subtitle: "Select the previous terminal tab in visual traversal order",
+            keywords: ["terminal", "tab", "previous", "cycle", "前", "上", "左"],
+            systemImage: "arrow.up.left.square"
+        ),
+        ApexActionDescriptor(
             id: "tab.moveLeft",
             title: "Move Current Tab Left",
             subtitle: "Move the selected workspace or Agent Chat tab one position left",

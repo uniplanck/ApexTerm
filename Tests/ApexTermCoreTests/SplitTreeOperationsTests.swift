@@ -36,6 +36,56 @@ final class SplitTreeOperationsTests: XCTestCase {
         XCTAssertEqual(SplitTreeOperations.column(containing: first, in: result)?.selectedSessionID, second)
     }
 
+    func testVisualSessionIDsTraverseTopToBottomThenLeftToRight() {
+        let topLeftFirst = UUID()
+        let topLeftSecond = UUID()
+        let topRight = UUID()
+        let bottomLeft = UUID()
+        let bottomRightFirst = UUID()
+        let bottomRightSecond = UUID()
+
+        let topRow = SplitNode.split(
+            axis: .vertical,
+            ratio: 0.45,
+            first: .column(
+                TerminalColumn(
+                    sessionIDs: [topLeftFirst, topLeftSecond],
+                    selectedSessionID: topLeftFirst
+                )
+            ),
+            second: .column(TerminalColumn(sessionID: topRight))
+        )
+        let bottomRow = SplitNode.split(
+            axis: .vertical,
+            ratio: 0.6,
+            first: .column(TerminalColumn(sessionID: bottomLeft)),
+            second: .column(
+                TerminalColumn(
+                    sessionIDs: [bottomRightFirst, bottomRightSecond],
+                    selectedSessionID: bottomRightFirst
+                )
+            )
+        )
+        let root = SplitNode.split(
+            axis: .horizontal,
+            ratio: 0.5,
+            first: topRow,
+            second: bottomRow
+        )
+
+        XCTAssertEqual(
+            SplitTreeOperations.visualSessionIDs(in: root),
+            [
+                topLeftFirst,
+                topLeftSecond,
+                topRight,
+                bottomLeft,
+                bottomRightFirst,
+                bottomRightSecond
+            ]
+        )
+    }
+
     func testRemovingTabKeepsColumnAndSelectsSurvivingTab() {
         let first = UUID()
         let second = UUID()

@@ -356,6 +356,8 @@ public struct ApexSettingsDocument: Codable, Equatable, Sendable {
         binding("terminal.quick", "backtick", [.control]),
         binding("tab.next", "tab", [.control]),
         binding("tab.previous", "tab", [.control, .shift]),
+        binding("terminal.tab.next", "]", [.command, .shift]),
+        binding("terminal.tab.previous", "[", [.command, .shift]),
         ApexKeybinding(
             id: stableBindingID(actionID: "tab.moveLeft"),
             actionID: "tab.moveLeft",

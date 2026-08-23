@@ -28,6 +28,23 @@ public enum SplitTreeOperations {
         return result
     }
 
+    /// Terminal tabs in visual traversal order: top-to-bottom, then left-to-right.
+    /// Tabs within the same terminal column preserve their visible left-to-right order.
+    public static func visualSessionIDs(in node: SplitNode) -> [UUID] {
+        var columns: [VisualColumn] = []
+        appendVisualColumns(
+            from: node,
+            frame: VisualFrame(x: 0, y: 0, width: 1, height: 1),
+            to: &columns
+        )
+        return columns
+            .sorted {
+                if $0.y == $1.y { return $0.x < $1.x }
+                return $0.y < $1.y
+            }
+            .flatMap(\.sessionIDs)
+    }
+
     public static func contains(sessionID: UUID, in node: SplitNode) -> Bool {
         switch node {
         case let .pane(existingID):
@@ -516,6 +533,80 @@ public enum SplitTreeOperations {
             return column.sessionIDs.contains(sessionID)
         case .split:
             return false
+        }
+    }
+
+    private struct VisualFrame {
+        var x: Double
+        var y: Double
+        var width: Double
+        var height: Double
+    }
+
+    private struct VisualColumn {
+        var x: Double
+        var y: Double
+        var sessionIDs: [UUID]
+    }
+
+    private static func appendVisualColumns(
+        from node: SplitNode,
+        frame: VisualFrame,
+        to result: inout [VisualColumn]
+    ) {
+        switch node {
+        case let .pane(sessionID):
+            result.append(VisualColumn(x: frame.x, y: frame.y, sessionIDs: [sessionID]))
+        case let .column(column):
+            result.append(VisualColumn(x: frame.x, y: frame.y, sessionIDs: column.sessionIDs))
+        case let .split(axis, rawRatio, first, second):
+            let ratio = min(0.95, max(0.05, rawRatio))
+            switch axis {
+            case .vertical:
+                let firstWidth = frame.width * ratio
+                appendVisualColumns(
+                    from: first,
+                    frame: VisualFrame(
+                        x: frame.x,
+                        y: frame.y,
+                        width: firstWidth,
+                        height: frame.height
+                    ),
+                    to: &result
+                )
+                appendVisualColumns(
+                    from: second,
+                    frame: VisualFrame(
+                        x: frame.x + firstWidth,
+                        y: frame.y,
+                        width: frame.width - firstWidth,
+                        height: frame.height
+                    ),
+                    to: &result
+                )
+            case .horizontal:
+                let firstHeight = frame.height * ratio
+                appendVisualColumns(
+                    from: first,
+                    frame: VisualFrame(
+                        x: frame.x,
+                        y: frame.y,
+                        width: frame.width,
+                        height: firstHeight
+                    ),
+                    to: &result
+                )
+                appendVisualColumns(
+                    from: second,
+                    frame: VisualFrame(
+                        x: frame.x,
+                        y: frame.y + firstHeight,
+                        width: frame.width,
+                        height: frame.height - firstHeight
+                    ),
+                    to: &result
+                )
+            }
         }
     }
 

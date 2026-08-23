@@ -87,6 +87,18 @@ struct ApexTermApp: App {
 
                 Divider()
 
+                Button("Next Terminal Tab") {
+                    model.performAction(id: "terminal.tab.next")
+                }
+                .apexKeyboardShortcut(model.keybindingChord(for: "terminal.tab.next"))
+
+                Button("Previous Terminal Tab") {
+                    model.performAction(id: "terminal.tab.previous")
+                }
+                .apexKeyboardShortcut(model.keybindingChord(for: "terminal.tab.previous"))
+
+                Divider()
+
                 Button("Move Current Tab Left") {
                     model.performAction(id: "tab.moveLeft")
                 }
