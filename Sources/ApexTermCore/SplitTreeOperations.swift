@@ -79,6 +79,24 @@ public enum SplitTreeOperations {
         }
     }
 
+    public static func splitAnchorSessionID(
+        sourceSessionID: UUID,
+        targetSessionID: UUID,
+        in node: SplitNode
+    ) -> UUID? {
+        guard contains(sessionID: sourceSessionID, in: node),
+              contains(sessionID: targetSessionID, in: node) else {
+            return nil
+        }
+        guard sourceSessionID == targetSessionID else {
+            return targetSessionID
+        }
+        guard let sourceColumn = column(containing: sourceSessionID, in: node) else {
+            return nil
+        }
+        return sourceColumn.sessionIDs.first(where: { $0 != sourceSessionID })
+    }
+
     public static func selectingSession(_ sessionID: UUID, in node: SplitNode) -> SplitNode {
         switch node {
         case let .pane(existingID):

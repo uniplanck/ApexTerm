@@ -126,6 +126,30 @@ final class SplitTreeOperationsTests: XCTestCase {
         XCTAssertEqual(SplitTreeOperations.column(containing: source, in: result)?.selectedSessionID, source)
     }
 
+    func testSameSessionSplitAnchorUsesSiblingTabInColumn() {
+        let dragged = UUID()
+        let sibling = UUID()
+        let root = SplitNode.column(
+            TerminalColumn(sessionIDs: [dragged, sibling], selectedSessionID: dragged)
+        )
+
+        XCTAssertEqual(
+            SplitTreeOperations.splitAnchorSessionID(
+                sourceSessionID: dragged,
+                targetSessionID: dragged,
+                in: root
+            ),
+            sibling
+        )
+        XCTAssertNil(
+            SplitTreeOperations.splitAnchorSessionID(
+                sourceSessionID: dragged,
+                targetSessionID: dragged,
+                in: .column(TerminalColumn(sessionID: dragged))
+            )
+        )
+    }
+
     func testSplitPreservesExistingTabsInsideOriginalColumn() {
         let first = UUID()
         let second = UUID()

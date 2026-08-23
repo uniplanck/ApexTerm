@@ -281,6 +281,67 @@ run_case() {
   sleep 0.7
 }
 
+run_same_column_left_case() {
+  local case_name="same-left"
+  local support drag_probe workspace_file
+  launch_case "$case_name"
+  support="$CASE_SUPPORT"
+  drag_probe="$CASE_DRAG_PROBE"
+  workspace_file="$support/workspaces.json"
+
+  local first_column second_column first_id base_right_id extra_right_id
+  first_column="$(column_json '.workspaces[0].layout.split.first' "$workspace_file")"
+  second_column="$(column_json '.workspaces[0].layout.split.second' "$workspace_file")"
+  first_id="$(print -r -- "$first_column" | jq -r '.sessionIDs[0]')"
+  base_right_id="$(print -r -- "$second_column" | jq -r '.sessionIDs[0]')"
+  extra_right_id="$(print -r -- "$second_column" | jq -r '.sessionIDs[1]')"
+
+  local source_x source_y target_x target_y before_layout
+  source_x="$(jq -r --arg id "$extra_right_id" '.handles[$id] | (.x + .width / 2) | floor' "$drag_probe")"
+  source_y="$(jq -r --arg id "$extra_right_id" '.handles[$id] | (.y + .height / 2) | floor' "$drag_probe")"
+  target_x="$(jq -r --arg id "$first_id" '.targets[$id] | (.x + .width / 2) | floor' "$drag_probe")"
+  target_y="$(jq -r --arg id "$first_id" '.targets[$id] | (.y + .height / 2) | floor' "$drag_probe")"
+  before_layout="$(jq -c '.workspaces[0].layout' "$workspace_file")"
+  drag_and_wait_for_layout_change \
+    "$workspace_file" "$before_layout" \
+    "$source_x" "$source_y" "$target_x" "$target_y"
+
+  [[ "$(column_count "$workspace_file")" -eq 2 ]]
+  local left_after_center right_after_center
+  left_after_center="$(column_json '.workspaces[0].layout.split.first' "$workspace_file")"
+  right_after_center="$(column_json '.workspaces[0].layout.split.second' "$workspace_file")"
+  [[ "$(print -r -- "$left_after_center" | jq -r --arg id "$extra_right_id" '.sessionIDs | index($id) != null')" == true ]]
+  [[ "$(print -r -- "$right_after_center" | jq -r '.sessionIDs[0]')" == "$base_right_id" ]]
+
+  sleep 0.5
+  source_x="$(jq -r --arg id "$extra_right_id" '.handles[$id] | (.x + .width / 2) | floor' "$drag_probe")"
+  source_y="$(jq -r --arg id "$extra_right_id" '.handles[$id] | (.y + .height / 2) | floor' "$drag_probe")"
+  target_x="$(jq -r --arg id "$extra_right_id" '.targets[$id] | (.x + .width * 0.08) | floor' "$drag_probe")"
+  target_y="$(jq -r --arg id "$extra_right_id" '.targets[$id] | (.y + .height / 2) | floor' "$drag_probe")"
+  before_layout="$(jq -c '.workspaces[0].layout' "$workspace_file")"
+  drag_and_wait_for_layout_change \
+    "$workspace_file" "$before_layout" \
+    "$source_x" "$source_y" "$target_x" "$target_y"
+
+  [[ "$(column_count "$workspace_file")" -eq 3 ]]
+  local nested_axis nested_first nested_second final_right
+  nested_axis="$(jq -r '.workspaces[0].layout.split.first.split.axis' "$workspace_file")"
+  nested_first="$(column_json '.workspaces[0].layout.split.first.split.first' "$workspace_file")"
+  nested_second="$(column_json '.workspaces[0].layout.split.first.split.second' "$workspace_file")"
+  final_right="$(column_json '.workspaces[0].layout.split.second' "$workspace_file")"
+  [[ "$nested_axis" == vertical ]]
+  [[ "$(print -r -- "$nested_first" | jq -r '.sessionIDs[0]')" == "$extra_right_id" ]]
+  [[ "$(print -r -- "$nested_second" | jq -r '.sessionIDs[0]')" == "$first_id" ]]
+  [[ "$(print -r -- "$final_right" | jq -r '.sessionIDs[0]')" == "$base_right_id" ]]
+  jq -e --arg id "$extra_right_id" '.events | index("region:" + $id + ":left") != null' "$drag_probe" >/dev/null
+  jq -e --arg id "$extra_right_id" '.events | index("drop:" + $id + ":" + $id + ":left") != null' "$drag_probe" >/dev/null
+  printf 'TERMINAL_COLUMN_SAME_COLUMN_LEFT_EDGE_E2E=PASS\n'
+
+  terminate_current_process
+  rm -rf "${support:h}" 2>/dev/null || true
+  sleep 0.7
+}
+
 [[ -d "$APP" ]]
 [[ -x "$EXECUTABLE" ]]
 command -v cliclick >/dev/null
@@ -290,7 +351,7 @@ typeset -a requested_cases
 if [[ -n "${APEXTERM_DRAG_CASES:-}" ]]; then
   requested_cases=("${(@s: :)APEXTERM_DRAG_CASES}")
 else
-  requested_cases=(reorder center left right top bottom)
+  requested_cases=(reorder center left right top bottom same-left)
 fi
 
 for case_name in "${requested_cases[@]}"; do
@@ -300,6 +361,9 @@ for case_name in "${requested_cases[@]}"; do
       ;;
     center|left|right|top|bottom)
       run_case "$case_name" "$case_name"
+      ;;
+    same-left)
+      run_same_column_left_case
       ;;
     *)
       print -u2 -r -- "Unknown APEXTERM_DRAG_CASES entry: $case_name"

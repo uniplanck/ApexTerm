@@ -1822,14 +1822,17 @@ final class AppModel: ObservableObject {
         targetSessionID: UUID,
         region: TerminalDropRegion
     ) {
-        guard sourceSessionID != targetSessionID,
-              let sourceWorkspaceID = workspaces.first(where: {
+        guard let sourceWorkspaceID = workspaces.first(where: {
                   SplitTreeOperations.contains(sessionID: sourceSessionID, in: $0.layout)
               })?.id,
               let targetWorkspace = workspaces.first(where: { workspace in
                   workspace.id == targetWorkspaceID
                       && SplitTreeOperations.contains(sessionID: targetSessionID, in: workspace.layout)
               }) else {
+            return
+        }
+
+        if sourceSessionID == targetSessionID && region == .center {
             return
         }
 
@@ -1869,12 +1872,20 @@ final class AppModel: ObservableObject {
                 return
             }
 
+            guard let splitTargetSessionID = SplitTreeOperations.splitAnchorSessionID(
+                sourceSessionID: sourceSessionID,
+                targetSessionID: targetSessionID,
+                in: targetWorkspace.layout
+            ) else {
+                return
+            }
+
             let baseLayout: SplitNode
             if sourceWorkspaceID == targetWorkspaceID {
                 guard let reduced = SplitTreeOperations.removing(
                     sessionID: sourceSessionID,
                     from: targetWorkspace.layout
-                ), SplitTreeOperations.contains(sessionID: targetSessionID, in: reduced) else {
+                ), SplitTreeOperations.contains(sessionID: splitTargetSessionID, in: reduced) else {
                     return
                 }
                 baseLayout = reduced
@@ -1885,7 +1896,7 @@ final class AppModel: ObservableObject {
             let previousColumnCount = SplitTreeOperations.columnCount(in: baseLayout)
             targetLayout = SplitTreeOperations.inserting(
                 subtree: .column(TerminalColumn(sessionID: sourceSessionID)),
-                at: targetSessionID,
+                at: splitTargetSessionID,
                 axis: axis,
                 newPaneFirst: newColumnFirst,
                 in: baseLayout

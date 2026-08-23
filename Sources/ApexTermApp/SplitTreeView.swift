@@ -174,7 +174,11 @@ struct SplitTreeView: View {
                     isFocused: isFocused
                 )
                 Divider()
-                pane(sessionID: resolvedSessionID, showsHeader: false)
+                pane(
+                    sessionID: resolvedSessionID,
+                    showsHeader: false,
+                    allowsSelfEdgeDrop: column.sessionIDs.count > 1
+                )
             }
             .background(Color(nsColor: .windowBackgroundColor))
             .overlay {
@@ -368,7 +372,11 @@ struct SplitTreeView: View {
     }
 
     @ViewBuilder
-    private func pane(sessionID: UUID, showsHeader: Bool = true) -> some View {
+    private func pane(
+        sessionID: UUID,
+        showsHeader: Bool = true,
+        allowsSelfEdgeDrop: Bool = false
+    ) -> some View {
         if let session = model.session(id: sessionID) {
             GeometryReader { proxy in
                 let transcriptMode = model.commandTranscriptMode
@@ -581,6 +589,7 @@ struct SplitTreeView: View {
 
                     NativePaneDropTarget(
                         targetSessionID: sessionID,
+                        allowsSelfEdgeDrop: allowsSelfEdgeDrop,
                         onRegionChange: { region in
                             activeDropRegion = region
                         },

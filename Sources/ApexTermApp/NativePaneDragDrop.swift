@@ -330,6 +330,7 @@ final class NativePaneDragHandleView: NSView, NSDraggingSource {
 
 struct NativePaneDropTarget: NSViewRepresentable {
     let targetSessionID: UUID
+    let allowsSelfEdgeDrop: Bool
     let onRegionChange: @MainActor (TerminalDropRegion?) -> Void
     let onDrop: @MainActor (TerminalDragPayload, TerminalDropRegion) -> Void
 
@@ -337,6 +338,7 @@ struct NativePaneDropTarget: NSViewRepresentable {
         let view = NativePaneDropTargetView()
         view.configure(
             targetSessionID: targetSessionID,
+            allowsSelfEdgeDrop: allowsSelfEdgeDrop,
             onRegionChange: onRegionChange,
             onDrop: onDrop
         )
@@ -346,6 +348,7 @@ struct NativePaneDropTarget: NSViewRepresentable {
     func updateNSView(_ nsView: NativePaneDropTargetView, context: Context) {
         nsView.configure(
             targetSessionID: targetSessionID,
+            allowsSelfEdgeDrop: allowsSelfEdgeDrop,
             onRegionChange: onRegionChange,
             onDrop: onDrop
         )
@@ -355,6 +358,7 @@ struct NativePaneDropTarget: NSViewRepresentable {
 @MainActor
 final class NativePaneDropTargetView: NSView {
     private var targetSessionID = UUID()
+    private var allowsSelfEdgeDrop = false
     private var onRegionChange: @MainActor (TerminalDropRegion?) -> Void = { _ in }
     private var onDrop: @MainActor (TerminalDragPayload, TerminalDropRegion) -> Void = { _, _ in }
 
@@ -376,12 +380,15 @@ final class NativePaneDropTargetView: NSView {
 
     func configure(
         targetSessionID: UUID,
+        allowsSelfEdgeDrop: Bool,
         onRegionChange: @escaping @MainActor (TerminalDropRegion?) -> Void,
         onDrop: @escaping @MainActor (TerminalDragPayload, TerminalDropRegion) -> Void
     ) {
         self.targetSessionID = targetSessionID
+        self.allowsSelfEdgeDrop = allowsSelfEdgeDrop
         self.onRegionChange = onRegionChange
         self.onDrop = onDrop
+        NativePaneDragProbe.recordTarget(self, sessionID: targetSessionID)
         setAccessibilityLabel("Pane drop target")
         setAccessibilityIdentifier("native-pane-drop-target-\(targetSessionID.uuidString)")
     }
@@ -398,8 +405,10 @@ final class NativePaneDropTargetView: NSView {
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard let sourceSessionID = NativePaneDragState.activeSessionID,
-              sourceSessionID != targetSessionID,
               bounds.contains(point) else {
+            return nil
+        }
+        if sourceSessionID == targetSessionID && !allowsSelfEdgeDrop {
             return nil
         }
         return self
@@ -418,17 +427,26 @@ final class NativePaneDropTargetView: NSView {
     }
 
     override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        decodedPayload(from: sender)?.workspacePaneSessionID != targetSessionID
+        guard let sourceSessionID = decodedPayload(from: sender)?.workspacePaneSessionID else {
+            return false
+        }
+        guard sourceSessionID == targetSessionID else { return true }
+        return allowsSelfEdgeDrop && resolvedRegion(for: sender) != .center
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         guard let payload = decodedPayload(from: sender),
-              payload.workspacePaneSessionID != targetSessionID else {
+              let sourceSessionID = payload.workspacePaneSessionID else {
             onRegionChange(nil)
             return false
         }
 
         let region = resolvedRegion(for: sender)
+        if sourceSessionID == targetSessionID
+            && (!allowsSelfEdgeDrop || region == .center) {
+            onRegionChange(nil)
+            return false
+        }
         let sourceID = payload.workspacePaneSessionID?.uuidString ?? "unknown"
         NativePaneDragProbe.recordEvent(
             "drop:\(sourceID):\(targetSessionID.uuidString):\(region.rawValue)"
@@ -444,11 +462,21 @@ final class NativePaneDropTargetView: NSView {
 
     private func updateRegion(_ sender: NSDraggingInfo) -> NSDragOperation {
         guard let payload = decodedPayload(from: sender),
-              payload.workspacePaneSessionID != targetSessionID else {
+              let sourceSessionID = payload.workspacePaneSessionID else {
             onRegionChange(nil)
             return []
         }
         let region = resolvedRegion(for: sender)
+        if sourceSessionID == targetSessionID {
+            guard allowsSelfEdgeDrop else {
+                onRegionChange(nil)
+                return []
+            }
+            if region == .center {
+                onRegionChange(nil)
+                return .move
+            }
+        }
         NativePaneDragProbe.recordEvent(
             "region:\(targetSessionID.uuidString):\(region.rawValue)"
         )
