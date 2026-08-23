@@ -15,6 +15,8 @@ final class ActionRegistryTests: XCTestCase {
         XCTAssertNotNil(registry.action(id: "pane.select.4"))
         XCTAssertNotNil(registry.action(id: "tab.next"))
         XCTAssertNotNil(registry.action(id: "tab.previous"))
+        XCTAssertNotNil(registry.action(id: "tab.moveLeft"))
+        XCTAssertNotNil(registry.action(id: "tab.moveRight"))
         XCTAssertNotNil(registry.action(id: "terminal.latestOutput.copy"))
         XCTAssertTrue(
             Set(ApexSettingsDocument.defaultKeybindings.map(\.actionID))

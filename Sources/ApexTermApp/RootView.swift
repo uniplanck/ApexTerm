@@ -1,7 +1,6 @@
 import ApexTermCore
 import AppKit
 import SwiftUI
-import UniformTypeIdentifiers
 
 @MainActor
 private final class TransientNoticePresentationProbe {
@@ -25,26 +24,154 @@ private enum WorkspaceSidebarPlacement: String {
     case right
 }
 
-private let mainToolbarControlUTType = UTType(exportedAs: "com.uniplanck.apexterm.main-toolbar-control")
-
-private struct MainToolbarReorderDropDelegate: DropDelegate {
-    let targetControl: UIControlID
+private struct NativeMainToolbarCommandDragMonitor: NSViewRepresentable {
+    let controls: [UIControlID]
     @Binding var draggedControl: UIControlID?
     let move: (UIControlID, UIControlID, Bool) -> Void
 
-    func dropEntered(info: DropInfo) {
-        guard let draggedControl, draggedControl != targetControl else { return }
-        move(draggedControl, targetControl, info.location.x > 12)
+    func makeNSView(context: Context) -> CommandDragMonitorView {
+        CommandDragMonitorView(
+            controls: controls,
+            onDragStateChange: { draggedControl = $0 },
+            move: move
+        )
     }
 
-    func dropUpdated(info: DropInfo) -> DropProposal? {
-        DropProposal(operation: .move)
+    func updateNSView(_ nsView: CommandDragMonitorView, context: Context) {
+        nsView.controls = controls
+        nsView.onDragStateChange = { draggedControl = $0 }
+        nsView.move = move
     }
 
-    func performDrop(info: DropInfo) -> Bool {
-        guard draggedControl != nil else { return false }
-        draggedControl = nil
-        return true
+    static func dismantleNSView(_ nsView: CommandDragMonitorView, coordinator: ()) {
+        nsView.stopMonitoring()
+    }
+
+    @MainActor
+    final class CommandDragMonitorView: NSView {
+        var controls: [UIControlID]
+        var onDragStateChange: (UIControlID?) -> Void
+        var move: (UIControlID, UIControlID, Bool) -> Void
+
+        private var eventMonitor: Any?
+        private var sourceControl: UIControlID?
+        private var sourceIndex: Int?
+
+        private let horizontalPadding: CGFloat = 6
+        private let controlWidth: CGFloat = 22
+        private let spacing: CGFloat = 8
+
+        init(
+            controls: [UIControlID],
+            onDragStateChange: @escaping (UIControlID?) -> Void,
+            move: @escaping (UIControlID, UIControlID, Bool) -> Void
+        ) {
+            self.controls = controls
+            self.onDragStateChange = onDragStateChange
+            self.move = move
+            super.init(frame: .zero)
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) {
+            fatalError("init(coder:) has not been implemented")
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if window == nil {
+                stopMonitoring()
+            } else {
+                startMonitoringIfNeeded()
+            }
+        }
+
+        func stopMonitoring() {
+            if let eventMonitor {
+                NSEvent.removeMonitor(eventMonitor)
+                self.eventMonitor = nil
+            }
+            sourceControl = nil
+            sourceIndex = nil
+            onDragStateChange(nil)
+        }
+
+        private func startMonitoringIfNeeded() {
+            guard eventMonitor == nil else { return }
+            eventMonitor = NSEvent.addLocalMonitorForEvents(
+                matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]
+            ) { [weak self] event in
+                guard let self else { return event }
+                return self.handle(event)
+            }
+        }
+
+        private func handle(_ event: NSEvent) -> NSEvent? {
+            guard event.window === window else { return event }
+
+            switch event.type {
+            case .leftMouseDown:
+                guard NSEvent.modifierFlags.contains(.command),
+                      let index = sourceIndex(at: event.locationInWindow) else {
+                    return event
+                }
+                sourceIndex = index
+                sourceControl = controls[index]
+                onDragStateChange(controls[index])
+                return nil
+
+            case .leftMouseDragged:
+                return sourceControl == nil ? event : nil
+
+            case .leftMouseUp:
+                guard let sourceControl,
+                      let sourceIndex else { return event }
+                defer {
+                    self.sourceControl = nil
+                    self.sourceIndex = nil
+                    onDragStateChange(nil)
+                }
+
+                guard let targetIndex = targetIndex(at: event.locationInWindow),
+                      targetIndex != sourceIndex else {
+                    return nil
+                }
+                move(
+                    sourceControl,
+                    controls[targetIndex],
+                    targetIndex > sourceIndex
+                )
+                return nil
+
+            default:
+                return event
+            }
+        }
+
+        private func sourceIndex(at windowPoint: NSPoint) -> Int? {
+            guard !controls.isEmpty else { return nil }
+            let point = convert(windowPoint, from: nil)
+            guard bounds.contains(point) else { return nil }
+
+            let centerOffset = horizontalPadding + controlWidth / 2
+            let pitch = controlWidth + spacing
+            let rawIndex = (point.x - centerOffset) / pitch
+            let index = Int(rawIndex.rounded())
+            guard controls.indices.contains(index) else { return nil }
+
+            let centerX = centerOffset + CGFloat(index) * pitch
+            guard abs(point.x - centerX) <= controlWidth / 2 + 2 else { return nil }
+            return index
+        }
+
+        private func targetIndex(at windowPoint: NSPoint) -> Int? {
+            guard !controls.isEmpty else { return nil }
+            let point = convert(windowPoint, from: nil)
+            let centerOffset = horizontalPadding + controlWidth / 2
+            let pitch = controlWidth + spacing
+            let rawIndex = Int(((point.x - centerOffset) / pitch).rounded())
+            return min(max(rawIndex, 0), controls.count - 1)
+        }
     }
 }
 
@@ -565,15 +692,27 @@ struct RootView: View {
         ) {
             ForEach(sessionIDs, id: \.self) { sessionID in
                 if let session = model.session(id: sessionID) {
+                    let isSelectedSession = workspace.id == model.selectedWorkspaceID
+                        && sessionID == model.selectedSessionID
+
                     Button {
                         model.selectWorkspace(workspace)
                         model.selectSession(sessionID)
                     } label: {
                         Label(session.title, systemImage: "terminal")
                             .lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .buttonStyle(.plain)
                     .padding(.leading, 10)
+                    .padding(.vertical, 2)
+                    .padding(.trailing, 4)
+                    .background(
+                        isSelectedSession
+                            ? Color.accentColor.opacity(0.24)
+                            : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 5)
+                    )
                     .simultaneousGesture(
                         TapGesture(count: 2).onEnded {
                             beginRenameSession(session)
@@ -604,7 +743,7 @@ struct RootView: View {
         }
         .listRowBackground(
             workspace.id == model.selectedWorkspaceID
-                ? Color.accentColor.opacity(0.14)
+                ? Color.accentColor.opacity(0.20)
                 : Color.clear
         )
     }
@@ -764,13 +903,29 @@ struct RootView: View {
     }
 
     private func fullToolbar(layout: ResponsiveLayoutPolicy) -> some View {
-        HStack(spacing: 8) {
-            ForEach(responsiveTopBarControls(layout: layout)) { control in
+        let controls = responsiveTopBarControls(layout: layout)
+
+        return HStack(spacing: 8) {
+            ForEach(controls) { control in
                 mainToolbarControl(control, layout: layout)
             }
         }
         .padding(.horizontal, 6)
         .frame(height: 34)
+        .background {
+            NativeMainToolbarCommandDragMonitor(
+                controls: controls,
+                draggedControl: $draggedMainToolbarControl
+            ) { source, target, after in
+                withAnimation(.snappy(duration: 0.16)) {
+                    model.moveTopBarControl(
+                        source,
+                        relativeTo: target,
+                        after: after
+                    )
+                }
+            }
+        }
     }
 
     private func responsiveTopBarControls(layout: ResponsiveLayoutPolicy) -> [UIControlID] {
@@ -936,34 +1091,7 @@ struct RootView: View {
         }
         .frame(minWidth: 22, minHeight: 24)
         .contentShape(Rectangle())
-        .onDrag {
-            guard NSEvent.modifierFlags.contains(.command) else {
-                draggedMainToolbarControl = nil
-                return NSItemProvider()
-            }
-
-            draggedMainToolbarControl = control
-            let provider = NSItemProvider()
-            provider.registerDataRepresentation(
-                forTypeIdentifier: mainToolbarControlUTType.identifier,
-                visibility: .all
-            ) { completion in
-                completion(Data(control.rawValue.utf8), nil)
-                return nil
-            }
-            return provider
-        }
-        .onDrop(
-            of: [mainToolbarControlUTType],
-            delegate: MainToolbarReorderDropDelegate(
-                targetControl: control,
-                draggedControl: $draggedMainToolbarControl
-            ) { source, target, after in
-                withAnimation(.snappy(duration: 0.16)) {
-                    model.moveTopBarControl(source, relativeTo: target, after: after)
-                }
-            }
-        )
+        .opacity(draggedMainToolbarControl == control ? 0.55 : 1)
         .accessibilityIdentifier("main-toolbar-control-\(control.rawValue)")
     }
 

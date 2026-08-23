@@ -1006,16 +1006,24 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private var selectedMainTabReference: MainTabReference? {
+        if let selectedAgentChatID {
+            return .agentChat(selectedAgentChatID)
+        }
+        if let selectedWorkspaceID {
+            return .workspace(selectedWorkspaceID)
+        }
+        return nil
+    }
+
+    func moveSelectedMainTab(offset: Int) {
+        guard let selectedMainTabReference else { return }
+        moveMainTab(selectedMainTabReference, offset: offset)
+    }
+
     func selectAdjacentMainTab(offset: Int) {
         guard !mainTabOrder.isEmpty, offset != 0 else { return }
-        let selectedReference: MainTabReference? = if let selectedAgentChatID {
-            .agentChat(selectedAgentChatID)
-        } else if let selectedWorkspaceID {
-            .workspace(selectedWorkspaceID)
-        } else {
-            nil
-        }
-        let currentIndex = selectedReference.flatMap(mainTabOrder.firstIndex(of:)) ?? 0
+        let currentIndex = selectedMainTabReference.flatMap(mainTabOrder.firstIndex(of:)) ?? 0
         let count = mainTabOrder.count
         let targetIndex = ((currentIndex + offset) % count + count) % count
         selectMainTab(mainTabOrder[targetIndex])
@@ -2955,6 +2963,10 @@ final class AppModel: ObservableObject {
             selectAdjacentMainTab(offset: 1)
         case "tab.previous":
             selectAdjacentMainTab(offset: -1)
+        case "tab.moveLeft":
+            moveSelectedMainTab(offset: -1)
+        case "tab.moveRight":
+            moveSelectedMainTab(offset: 1)
         case let actionID where actionID.hasPrefix("tab.select."):
             if let number = Int(actionID.dropFirst("tab.select.".count)) {
                 selectMainTab(number: number)

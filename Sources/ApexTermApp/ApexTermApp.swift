@@ -87,6 +87,18 @@ struct ApexTermApp: App {
 
                 Divider()
 
+                Button("Move Current Tab Left") {
+                    model.performAction(id: "tab.moveLeft")
+                }
+                .apexKeyboardShortcut(model.keybindingChord(for: "tab.moveLeft"))
+
+                Button("Move Current Tab Right") {
+                    model.performAction(id: "tab.moveRight")
+                }
+                .apexKeyboardShortcut(model.keybindingChord(for: "tab.moveRight"))
+
+                Divider()
+
                 ForEach(1...9, id: \.self) { number in
                     Button("Select Tab \(number)") {
                         model.performAction(id: "tab.select.\(number)")

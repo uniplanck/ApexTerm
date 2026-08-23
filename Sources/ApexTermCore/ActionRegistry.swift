@@ -241,6 +241,20 @@ public struct ApexActionRegistry: Sendable {
             systemImage: "arrow.left.to.line"
         ),
         ApexActionDescriptor(
+            id: "tab.moveLeft",
+            title: "Move Current Tab Left",
+            subtitle: "Move the selected workspace or Agent Chat tab one position left",
+            keywords: ["tab", "move", "left", "reorder", "移動", "左", "並び替え"],
+            systemImage: "arrow.left"
+        ),
+        ApexActionDescriptor(
+            id: "tab.moveRight",
+            title: "Move Current Tab Right",
+            subtitle: "Move the selected workspace or Agent Chat tab one position right",
+            keywords: ["tab", "move", "right", "reorder", "移動", "右", "並び替え"],
+            systemImage: "arrow.right"
+        ),
+        ApexActionDescriptor(
             id: "tab.select.1",
             title: "Select Tab 1",
             subtitle: "Select the first main tab",

@@ -378,7 +378,10 @@ struct SplitTreeView: View {
         selectedSessionID: UUID,
         isFocused: Bool
     ) -> some View {
-        let tabStripMaxWidth = min(CGFloat(column.sessionIDs.count) * 50 + 8, 300)
+        let tabCount = max(1, column.sessionIDs.count)
+        let tabStripIdealWidth = CGFloat(tabCount) * 36
+            + CGFloat(max(0, tabCount - 1)) * 2
+            + 8
 
         return HStack(spacing: 0) {
             ScrollView(.horizontal, showsIndicators: false) {
@@ -396,10 +399,16 @@ struct SplitTreeView: View {
                 .padding(.horizontal, 4)
                 .frame(minHeight: 31)
             }
-            .frame(maxWidth: tabStripMaxWidth)
+            .frame(
+                minWidth: min(36, tabStripIdealWidth),
+                idealWidth: tabStripIdealWidth,
+                maxWidth: tabStripIdealWidth
+            )
+            .layoutPriority(1)
 
             Color.clear
-                .frame(minWidth: 12, maxWidth: .infinity, maxHeight: .infinity)
+                .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
+                .layoutPriority(0)
                 .contentShape(Rectangle())
                 .onTapGesture {
                     model.selectSession(selectedSessionID)

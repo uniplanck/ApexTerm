@@ -46,6 +46,14 @@ final class SettingsModelsTests: XCTestCase {
             "⌃⇧⇥"
         )
         XCTAssertEqual(
+            document.keybindings.first(where: { $0.actionID == "tab.moveLeft" })?.isEnabled,
+            false
+        )
+        XCTAssertEqual(
+            document.keybindings.first(where: { $0.actionID == "tab.moveRight" })?.isEnabled,
+            false
+        )
+        XCTAssertEqual(
             document.keybinding(for: "tab.select.1")?.chord.displayName,
             "⌘1"
         )

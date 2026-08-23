@@ -356,6 +356,18 @@ public struct ApexSettingsDocument: Codable, Equatable, Sendable {
         binding("terminal.quick", "backtick", [.control]),
         binding("tab.next", "tab", [.control]),
         binding("tab.previous", "tab", [.control, .shift]),
+        ApexKeybinding(
+            id: stableBindingID(actionID: "tab.moveLeft"),
+            actionID: "tab.moveLeft",
+            chord: ApexKeyChord(key: "left", modifiers: [.control, .command]),
+            isEnabled: false
+        ),
+        ApexKeybinding(
+            id: stableBindingID(actionID: "tab.moveRight"),
+            actionID: "tab.moveRight",
+            chord: ApexKeyChord(key: "right", modifiers: [.control, .command]),
+            isEnabled: false
+        ),
         binding("tab.select.1", "1", [.command]),
         binding("tab.select.2", "2", [.command]),
         binding("tab.select.3", "3", [.command]),
