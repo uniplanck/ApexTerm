@@ -616,6 +616,42 @@ final class AppModel: ObservableObject {
         scheduleSettingsPersist(immediate: true)
     }
 
+    @discardableResult
+    func assignKeybinding(
+        id: UUID,
+        key: String,
+        modifiers: Set<ApexKeyModifier>
+    ) -> Bool {
+        var document = settingsDocument
+        guard let index = materializeKeybinding(id: id, in: &document) else {
+            return false
+        }
+        let chord = ApexKeyChord(key: key, modifiers: modifiers)
+        guard !chord.key.isEmpty else { return false }
+        let existing = document.keybindings[index]
+        if hasEnabledKeybindingConflict(
+            chord: chord,
+            scope: existing.scope,
+            excluding: id
+        ) {
+            persistenceMessage = "Shortcut \(chord.displayName) is already in use"
+            return false
+        }
+        document.keybindings[index].chord = chord
+        document.keybindings[index].isEnabled = true
+        settingsDocument = ApexSettingsDocument(
+            schemaVersion: document.schemaVersion,
+            activeProfileID: document.activeProfileID,
+            profiles: document.profiles,
+            keybindings: document.keybindings,
+            general: document.general,
+            uiControls: document.uiControls
+        )
+        persistenceMessage = nil
+        scheduleSettingsPersist(immediate: true)
+        return true
+    }
+
     private func materializeKeybinding(
         id: UUID,
         in document: inout ApexSettingsDocument
@@ -637,7 +673,7 @@ final class AppModel: ObservableObject {
         scope: ApexKeybindingScope,
         excluding id: UUID
     ) -> Bool {
-        settingsDocument.keybindings.contains {
+        configuredKeybindings.contains {
             $0.id != id
                 && $0.isEnabled
                 && $0.scope == scope

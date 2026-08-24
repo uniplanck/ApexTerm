@@ -1,4 +1,5 @@
 import ApexTermCore
+import AppKit
 import SwiftUI
 
 struct TerminalProfilesSettingsView: View {
@@ -93,7 +94,7 @@ struct KeybindingsSettingsView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Keyboard Shortcuts")
                         .font(.headline)
-                    Text("Changes apply immediately to the macOS menu commands.")
+                    Text("Click a shortcut, then press the key combination you want. Esc cancels. Delete clears.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -125,38 +126,12 @@ private struct KeybindingEditorRow: View {
     let binding: ApexKeybinding
     let action: ApexActionDescriptor?
 
-    @State private var key: String
-    @State private var modifiers: Set<ApexKeyModifier>
-
-    init(
-        model: AppModel,
-        binding: ApexKeybinding,
-        action: ApexActionDescriptor?
-    ) {
-        self.model = model
-        self.binding = binding
-        self.action = action
-        _key = State(initialValue: binding.chord.key)
-        _modifiers = State(initialValue: binding.chord.modifiers)
+    private var currentBinding: ApexKeybinding {
+        model.configuredKeybindings.first(where: { $0.id == binding.id }) ?? binding
     }
 
     var body: some View {
         HStack(spacing: 12) {
-            Toggle(
-                "",
-                isOn: Binding(
-                    get: {
-                        model.configuredKeybindings.first(where: {
-                            $0.id == binding.id
-                        })?.isEnabled ?? false
-                    },
-                    set: {
-                        model.setKeybindingEnabled($0, id: binding.id)
-                    }
-                )
-            )
-            .labelsHidden()
-
             VStack(alignment: .leading, spacing: 3) {
                 Text(action?.title ?? binding.actionID)
                     .font(.system(size: 13, weight: .medium))
@@ -167,60 +142,244 @@ private struct KeybindingEditorRow: View {
             }
             .frame(minWidth: 240, maxWidth: .infinity, alignment: .leading)
 
-            HStack(spacing: 4) {
-                modifierToggle(.control, label: "⌃")
-                modifierToggle(.option, label: "⌥")
-                modifierToggle(.shift, label: "⇧")
-                modifierToggle(.command, label: "⌘")
-            }
-
-            TextField("Key", text: $key)
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 92)
-                .onSubmit(commit)
-                .onChange(of: key) { _, _ in
-                    commit()
-                }
-
-            Text(ApexKeyChord(key: key, modifiers: modifiers).displayName)
-                .font(.caption.monospaced())
-                .foregroundStyle(.secondary)
-                .frame(width: 72, alignment: .trailing)
-        }
-        .padding(.vertical, 4)
-        .onChange(of: binding.chord) { _, newValue in
-            key = newValue.key
-            modifiers = newValue.modifiers
-        }
-    }
-
-    private func modifierToggle(
-        _ modifier: ApexKeyModifier,
-        label: String
-    ) -> some View {
-        Toggle(
-            label,
-            isOn: Binding(
-                get: { modifiers.contains(modifier) },
-                set: { enabled in
-                    if enabled {
-                        modifiers.insert(modifier)
-                    } else {
-                        modifiers.remove(modifier)
-                    }
-                    commit()
+            ShortcutRecorderField(
+                displayName: currentBinding.chord.displayName,
+                isEnabled: currentBinding.isEnabled,
+                accessibilityLabel: action?.title ?? binding.actionID,
+                accessibilityIdentifier: "shortcut-recorder-\(binding.actionID)",
+                onRecord: { key, modifiers in
+                    model.assignKeybinding(
+                        id: binding.id,
+                        key: key,
+                        modifiers: modifiers
+                    )
+                },
+                onClear: {
+                    model.setKeybindingEnabled(false, id: binding.id)
                 }
             )
+            .frame(width: 170, height: 28)
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+private struct ShortcutRecorderField: NSViewRepresentable {
+    let displayName: String
+    let isEnabled: Bool
+    let accessibilityLabel: String
+    let accessibilityIdentifier: String
+    let onRecord: (String, Set<ApexKeyModifier>) -> Bool
+    let onClear: () -> Void
+
+    func makeNSView(context: Context) -> ShortcutRecorderButton {
+        let button = ShortcutRecorderButton(frame: .zero)
+        button.onRecord = onRecord
+        button.onClear = onClear
+        button.configure(
+            displayName: displayName,
+            isEnabled: isEnabled,
+            accessibilityLabel: accessibilityLabel,
+            accessibilityIdentifier: accessibilityIdentifier
         )
-        .toggleStyle(.button)
-        .frame(width: 34)
+        return button
     }
 
-    private func commit() {
-        model.updateKeybinding(
-            id: binding.id,
-            key: key,
-            modifiers: modifiers
+    func updateNSView(_ button: ShortcutRecorderButton, context: Context) {
+        button.onRecord = onRecord
+        button.onClear = onClear
+        button.configure(
+            displayName: displayName,
+            isEnabled: isEnabled,
+            accessibilityLabel: accessibilityLabel,
+            accessibilityIdentifier: accessibilityIdentifier
         )
+    }
+}
+
+@MainActor
+private final class ShortcutRecorderButton: NSButton {
+    var onRecord: ((String, Set<ApexKeyModifier>) -> Bool)?
+    var onClear: (() -> Void)?
+
+    private var localKeyMonitor: Any?
+    private var isRecording = false
+    private var configuredDisplayName = ""
+    private var configuredIsEnabled = false
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        target = self
+        action = #selector(beginRecording)
+        bezelStyle = .rounded
+        controlSize = .small
+        font = .monospacedSystemFont(ofSize: 12, weight: .medium)
+        focusRingType = .default
+        setButtonType(.momentaryPushIn)
+        toolTip = "Click, then press the shortcut you want. Esc cancels. Delete clears."
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func configure(
+        displayName: String,
+        isEnabled: Bool,
+        accessibilityLabel: String,
+        accessibilityIdentifier: String
+    ) {
+        configuredDisplayName = displayName
+        configuredIsEnabled = isEnabled
+        identifier = NSUserInterfaceItemIdentifier(accessibilityIdentifier)
+        setAccessibilityIdentifier(accessibilityIdentifier)
+        setAccessibilityLabel("Shortcut for \(accessibilityLabel)")
+        setAccessibilityValue(isEnabled ? displayName : "Not set")
+        refreshTitleIfIdle()
+    }
+
+    @objc private func beginRecording() {
+        guard !isRecording else { return }
+        guard window?.makeFirstResponder(self) == true else {
+            NSSound.beep()
+            return
+        }
+        isRecording = true
+        title = "Press shortcut…"
+        setAccessibilityValue("Recording shortcut")
+        installKeyMonitor()
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let result = super.resignFirstResponder()
+        if isRecording {
+            stopRecording()
+        }
+        return result
+    }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow == nil, isRecording {
+            stopRecording()
+        }
+        super.viewWillMove(toWindow: newWindow)
+    }
+
+    private func installKeyMonitor() {
+        removeKeyMonitor()
+        localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
+            [weak self] event in
+            guard let self, self.isRecording else { return event }
+            self.capture(event)
+            return nil
+        }
+    }
+
+    private func capture(_ event: NSEvent) {
+        switch event.keyCode {
+        case 53:
+            stopRecordingAndReleaseFocus()
+            return
+        case 51, 117:
+            onClear?()
+            configuredIsEnabled = false
+            stopRecordingAndReleaseFocus()
+            return
+        default:
+            break
+        }
+
+        guard let key = Self.keyName(for: event) else {
+            NSSound.beep()
+            return
+        }
+        let modifiers = Self.modifiers(for: event.modifierFlags)
+        guard onRecord?(key, modifiers) == true else {
+            NSSound.beep()
+            title = "Already in use"
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                guard let self, self.isRecording else { return }
+                self.title = "Press shortcut…"
+            }
+            return
+        }
+
+        let chord = ApexKeyChord(key: key, modifiers: modifiers)
+        configuredDisplayName = chord.displayName
+        configuredIsEnabled = true
+        stopRecordingAndReleaseFocus()
+    }
+
+    private func stopRecordingAndReleaseFocus() {
+        stopRecording()
+        _ = window?.makeFirstResponder(nil)
+    }
+
+    private func stopRecording() {
+        isRecording = false
+        removeKeyMonitor()
+        refreshTitleIfIdle()
+    }
+
+    private func removeKeyMonitor() {
+        if let localKeyMonitor {
+            NSEvent.removeMonitor(localKeyMonitor)
+            self.localKeyMonitor = nil
+        }
+    }
+
+    private func refreshTitleIfIdle() {
+        guard !isRecording else { return }
+        title = configuredIsEnabled ? configuredDisplayName : "Not set"
+    }
+
+    private static func modifiers(
+        for flags: NSEvent.ModifierFlags
+    ) -> Set<ApexKeyModifier> {
+        var result: Set<ApexKeyModifier> = []
+        if flags.contains(.control) { result.insert(.control) }
+        if flags.contains(.option) { result.insert(.option) }
+        if flags.contains(.shift) { result.insert(.shift) }
+        if flags.contains(.command) { result.insert(.command) }
+        if flags.contains(.function) { result.insert(.function) }
+        return result
+    }
+
+    private static func keyName(for event: NSEvent) -> String? {
+        switch event.keyCode {
+        case 36, 76: return "return"
+        case 48: return "tab"
+        case 49: return "space"
+        case 123: return "left"
+        case 124: return "right"
+        case 125: return "down"
+        case 126: return "up"
+        case 115: return "home"
+        case 119: return "end"
+        case 116: return "pageup"
+        case 121: return "pagedown"
+        case 122: return "f1"
+        case 120: return "f2"
+        case 99: return "f3"
+        case 118: return "f4"
+        case 96: return "f5"
+        case 97: return "f6"
+        case 98: return "f7"
+        case 100: return "f8"
+        case 101: return "f9"
+        case 109: return "f10"
+        case 103: return "f11"
+        case 111: return "f12"
+        default:
+            guard let characters = event.charactersIgnoringModifiers?
+                .trimmingCharacters(in: .controlCharacters),
+                !characters.isEmpty else {
+                return nil
+            }
+            return String(characters.prefix(1)).lowercased()
+        }
     }
 }
