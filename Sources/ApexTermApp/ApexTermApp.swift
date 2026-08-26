@@ -166,7 +166,7 @@ struct ApexTermApp: App {
                 }
             }
 
-            CommandGroup(replacing: .textEditing) {
+            CommandGroup(after: .textEditing) {
                 Button("Find in Terminal") {
                     model.performAction(id: "terminal.find")
                 }

@@ -1110,8 +1110,10 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
     private var scrollProbeFile: String?
     private var scrollProbeMarker: String?
     private var focusTask: Task<Void, Never>?
+    private var resizeSyncTask: Task<Void, Never>?
     private var controlCRecoveryTask: Task<Void, Never>?
     private var controlCRecoveryArmedUntil: Date?
+    private var controlCRecoveryAllowsAlternateScreen = false
     private var lastControlCAt: Date?
     private var localControlCRecoveryEnabled = false
     private var commandSessionID: UUID?
@@ -1244,6 +1246,8 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
     func terminateSession(scope: TerminalProcessTerminationScope) {
         setProgrammaticInputEnabled(false)
         cancelPendingFocusRequest()
+        resizeSyncTask?.cancel()
+        resizeSyncTask = nil
         cancelControlCRecovery()
         trustFilter.resetStreamState()
         inlineImageFilter.resetStreamState()
@@ -1343,11 +1347,81 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
         }
     }
 
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        scheduleFinalPTYResizeSync()
+    }
+
+    private func scheduleFinalPTYResizeSync() {
+        resizeSyncTask?.cancel()
+        resizeSyncTask = Task { @MainActor [weak self] in
+            // SwiftTerm updates rows/cols synchronously in setFrameSize. A final
+            // coalesced ioctl after AppKit/SwiftUI live-resize settles prevents the
+            // PTY from being left at an intermediate winsize during rapid resizing.
+            try? await Task.sleep(for: .milliseconds(16))
+            guard !Task.isCancelled, let self, process.running else { return }
+            resizeSyncTask = nil
+            var size = getWindowSize()
+            _ = PseudoTerminalHelpers.setWinSize(
+                masterPtyDescriptor: process.childfd,
+                windowSize: &size
+            )
+            needsDisplay = true
+            layer?.setNeedsDisplay()
+        }
+    }
+
+    private func forceApexSelection(for event: NSEvent) -> Bool {
+        event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.shift)
+    }
+
     override func mouseDown(with event: NSEvent) {
         onActivate?()
         cancelPendingFocusRequest()
         window?.makeFirstResponder(self)
+
+        let forceSelection = forceApexSelection(for: event)
+        let previousMouseReporting = allowMouseReporting
+        if forceSelection {
+            // SwiftTerm normally lets Shift bypass TUI mouse reporting, but a TUI
+            // can claim Shift via XTSHIFTESCAPE. ApexTerm reserves Shift-drag as a
+            // reliable local selection escape hatch without changing TUI mouse mode.
+            allowMouseReporting = false
+        }
+        defer {
+            if forceSelection {
+                allowMouseReporting = previousMouseReporting
+            }
+        }
         super.mouseDown(with: event)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        let forceSelection = forceApexSelection(for: event)
+        let previousMouseReporting = allowMouseReporting
+        if forceSelection {
+            allowMouseReporting = false
+        }
+        defer {
+            if forceSelection {
+                allowMouseReporting = previousMouseReporting
+            }
+        }
+        super.mouseDragged(with: event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        let forceSelection = forceApexSelection(for: event)
+        let previousMouseReporting = allowMouseReporting
+        if forceSelection {
+            allowMouseReporting = false
+        }
+        defer {
+            if forceSelection {
+                allowMouseReporting = previousMouseReporting
+            }
+        }
+        super.mouseUp(with: event)
     }
 
     func handleApexKeyDown(_ event: NSEvent) {
@@ -1638,12 +1712,13 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
         let repeated = lastControlCAt.map { now.timeIntervalSince($0) < 1.5 } ?? false
         lastControlCAt = now
         controlCRecoveryArmedUntil = now.addingTimeInterval(1.5)
+        controlCRecoveryAllowsAlternateScreen = repeated
         controlCRecoveryTask?.cancel()
         controlCRecoveryTask = nil
 
-        // Always arm a bounded fallback. A healthy PTY releases the foreground job
-        // before this fires, making the fallback a no-op; raw modes that suppress ^C
-        // output still recover without requiring the user to press Control-C twice.
+        // The first Control-C always respects an alternate-screen TUI's ownership.
+        // A repeated Control-C is an explicit recovery gesture: if the foreground
+        // job is still alive, signal only that job's process group, never the shell.
         scheduleControlCRecovery(after: repeated ? .milliseconds(120) : .milliseconds(250))
     }
 
@@ -1665,7 +1740,7 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
             defer { cancelControlCRecovery() }
             guard localControlCRecoveryEnabled,
                   process.running,
-                  !terminal.isCurrentBufferAlternate,
+                  (!terminal.isCurrentBufferAlternate || controlCRecoveryAllowsAlternateScreen),
                   let processSession = LocalTerminalProcessSession(rootPID: process.shellPid) else {
                 return
             }
@@ -1677,6 +1752,7 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
         controlCRecoveryTask?.cancel()
         controlCRecoveryTask = nil
         controlCRecoveryArmedUntil = nil
+        controlCRecoveryAllowsAlternateScreen = false
     }
 
     private func appendCapturedOutput(_ bytes: ArraySlice<UInt8>) {

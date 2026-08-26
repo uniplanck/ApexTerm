@@ -247,6 +247,121 @@ final class PTYRoundTripTests: XCTestCase {
     }
 
     @MainActor
+    func testRepeatedControlCRecoversStuckAlternateScreenForegroundJob() async throws {
+        let terminal = ApexLocalProcessTerminalView(
+            frame: CGRect(x: 0, y: 0, width: 640, height: 480)
+        )
+        terminal.setLocalControlCRecoveryEnabled(true)
+        var output = ""
+        terminal.onHostData = { bytes in
+            output += String(decoding: bytes, as: UTF8.self)
+        }
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["-df"],
+            environment: Terminal.getEnvironmentVariables(termName: "xterm-256color")
+        )
+        defer {
+            if terminal.process.running {
+                terminal.terminateSession(scope: .processGroup)
+            }
+        }
+        try await Task.sleep(for: .milliseconds(100))
+
+        terminal.send(
+            source: terminal,
+            data: Array("stty -isig; printf '\\033[?1049h'; sleep 30\n".utf8)[...]
+        )
+        let foregroundStarted = await waitUntilAsync(timeout: 2) {
+            terminal.terminal.isCurrentBufferAlternate
+                && LocalTerminalProcessSession(rootPID: terminal.process.shellPid)?
+                    .foregroundJobProcessGroup() != nil
+        }
+        XCTAssertTrue(foregroundStarted)
+
+        let controlC = try controlKeyEvent(character: "c", keyCode: 8)
+        terminal.handleApexKeyDown(controlC)
+        terminal.keyDown(with: controlC)
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertNotNil(
+            LocalTerminalProcessSession(rootPID: terminal.process.shellPid)?
+                .foregroundJobProcessGroup(),
+            "first Control-C must remain owned by an alternate-screen TUI"
+        )
+
+        terminal.handleApexKeyDown(controlC)
+        terminal.keyDown(with: controlC)
+        let foregroundReleased = await waitUntilAsync(timeout: 3) {
+            LocalTerminalProcessSession(rootPID: terminal.process.shellPid)?
+                .foregroundJobProcessGroup() == nil
+        }
+        XCTAssertTrue(foregroundReleased, "repeated Control-C did not release foreground job")
+        XCTAssertTrue(terminal.process.running, "root shell must survive forced foreground SIGINT")
+
+        terminal.send(
+            source: terminal,
+            data: Array("printf '\\033[?1049l__CTRL_C_ALT_RECOVERED__\\n'; stty isig\n".utf8)[...]
+        )
+        let shellRecovered = await waitUntilAsync(timeout: 3) {
+            output.contains("__CTRL_C_ALT_RECOVERED__")
+        }
+        XCTAssertTrue(shellRecovered, "output=\(output)")
+    }
+
+    @MainActor
+    func testShiftDragForcesSelectionWhenTUICapturesShiftMouse() throws {
+        let pasteboard = NSPasteboard.general
+        let original = pasteboard.string(forType: .string)
+        defer {
+            pasteboard.clearContents()
+            if let original {
+                pasteboard.setString(original, forType: .string)
+            }
+        }
+
+        let terminal = ApexLocalProcessTerminalView(
+            frame: CGRect(x: 0, y: 0, width: 640, height: 480)
+        )
+        terminal.terminal.feed(text: "selection-target")
+        terminal.terminal.feed(text: "\u{001B}[?1000h\u{001B}[>1s")
+        XCTAssertNotEqual(terminal.terminal.mouseMode, .off)
+        XCTAssertTrue(terminal.terminal.mouseShiftCapture)
+
+        let y = terminal.bounds.height - 8
+        let down = try mouseEvent(
+            type: .leftMouseDown,
+            location: NSPoint(x: 2, y: y),
+            modifiers: .shift
+        )
+        let dragStart = try mouseEvent(
+            type: .leftMouseDragged,
+            location: NSPoint(x: 8, y: y),
+            modifiers: .shift
+        )
+        let drag = try mouseEvent(
+            type: .leftMouseDragged,
+            location: NSPoint(x: 150, y: y),
+            modifiers: .shift
+        )
+        let up = try mouseEvent(
+            type: .leftMouseUp,
+            location: NSPoint(x: 150, y: y),
+            modifiers: .shift
+        )
+
+        terminal.mouseDown(with: down)
+        terminal.mouseDragged(with: dragStart)
+        terminal.mouseDragged(with: drag)
+        terminal.mouseUp(with: up)
+        terminal.copy(terminal)
+
+        XCTAssertTrue(
+            pasteboard.string(forType: .string)?.contains("selection-target") == true,
+            "Shift-drag must remain a local selection escape hatch even when TUI captures Shift"
+        )
+    }
+
+    @MainActor
     func testRemoteTrustPolicyBlocksOSC52ClipboardAccess() {
         let pasteboard = NSPasteboard.general
         let original = pasteboard.string(forType: .string)
@@ -448,6 +563,57 @@ final class PTYRoundTripTests: XCTestCase {
     }
 
     @MainActor
+    func testRapidViewFrameResizeKeepsPTYWinsizeAndSIGWINCHInSync() async throws {
+        let terminal = ApexLocalProcessTerminalView(
+            frame: CGRect(x: 0, y: 0, width: 640, height: 480)
+        )
+        var output = ""
+        terminal.onHostData = { bytes in
+            output += String(decoding: bytes, as: UTF8.self)
+        }
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["-df"],
+            environment: Terminal.getEnvironmentVariables(termName: "xterm-256color")
+        )
+        defer {
+            if terminal.process.running {
+                terminal.terminateSession(scope: .processGroup)
+            }
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        terminal.send(
+            source: terminal,
+            data: Array("trap 'printf __WINCH__' WINCH\n".utf8)[...]
+        )
+        try await Task.sleep(for: .milliseconds(100))
+
+        for size in [
+            NSSize(width: 720, height: 420),
+            NSSize(width: 1_180, height: 710),
+            NSSize(width: 780, height: 510),
+            NSSize(width: 1_020, height: 650)
+        ] {
+            terminal.setFrameSize(size)
+        }
+        try await Task.sleep(for: .milliseconds(80))
+
+        let rows = terminal.terminal.rows
+        let cols = terminal.terminal.cols
+        let expected = "__FRAME_SIZE__\(rows) \(cols)"
+        terminal.send(
+            source: terminal,
+            data: Array("printf '__FRAME_SIZE__'; stty size\n".utf8)[...]
+        )
+
+        let synchronized = await waitUntilAsync(timeout: 3) {
+            output.contains(expected)
+        }
+        XCTAssertTrue(synchronized, "expected=\(expected) output=\(output)")
+        XCTAssertTrue(output.contains("__WINCH__"), "foreground shell did not observe SIGWINCH")
+    }
+
+    @MainActor
     func testControlZForegroundResumeAndControlBackslash() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -574,6 +740,26 @@ final class PTYRoundTripTests: XCTestCase {
         XCTAssertTrue(waitUntil(timeout: 3) {
             Darwin.kill(childPID, 0) == -1 && errno == ESRCH
         })
+    }
+
+    private func mouseEvent(
+        type: NSEvent.EventType,
+        location: NSPoint,
+        modifiers: NSEvent.ModifierFlags
+    ) throws -> NSEvent {
+        try XCTUnwrap(
+            NSEvent.mouseEvent(
+                with: type,
+                location: location,
+                modifierFlags: modifiers,
+                timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: 0,
+                context: nil,
+                eventNumber: 0,
+                clickCount: 1,
+                pressure: 1
+            )
+        )
     }
 
     private func controlKeyEvent(
