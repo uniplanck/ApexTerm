@@ -108,7 +108,7 @@ public enum CommandTranscriptMode: String, Codable, CaseIterable, Identifiable, 
     }
 
     public var showsTranscript: Bool { self != .off }
-    public var recordLimit: Int { self == .ex ? 1 : 100 }
+    public var recordLimit: Int { 100 }
 
     public var next: Self {
         switch self {

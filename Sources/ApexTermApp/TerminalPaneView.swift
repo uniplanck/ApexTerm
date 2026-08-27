@@ -12,6 +12,7 @@ struct TerminalPaneView: NSViewRepresentable {
     let onDirectoryChange: (String?) -> Void
     let onStateChange: (SessionState) -> Void
     let onSemanticEvents: ([ShellSemanticEvent]) -> Void
+    let onPromptReadinessChange: (Bool) -> Void
     let onCommandCaptured: (CommandExecutionRecord) -> Void
     let onActivate: () -> Void
 
@@ -132,6 +133,7 @@ struct TerminalPaneView: NSViewRepresentable {
         terminal.configureInlineImageSafetyPolicy(session.inlineImageSafetyPolicy)
         terminal.configureResourceBudget()
         terminal.onActivate = onActivate
+        terminal.onPromptReadinessChanged = onPromptReadinessChange
         container.setInteractionActive(isActive)
         if abs(terminal.font.pointSize - CGFloat(session.fontSize)) > 0.1 {
             terminal.font = NSFont.monospacedSystemFont(
@@ -240,6 +242,20 @@ struct TerminalPaneView: NSViewRepresentable {
             } else {
                 transition(to: .failed)
             }
+        }
+
+        @discardableResult
+        func restartProcessIfNeeded() -> Bool {
+            guard !isShuttingDown,
+                  let terminal,
+                  !terminal.process.running else {
+                return false
+            }
+            reconnectTask?.cancel()
+            reconnectTask = nil
+            reconnectAttempt = 0
+            startProcess()
+            return terminal.process.running
         }
 
         func prepareForShutdown() {
@@ -515,6 +531,42 @@ final class TerminalPaneRuntimeStore {
         containers[sessionID]?.terminal.process.running == true
     }
 
+    func isPromptReady(sessionID: UUID) -> Bool {
+        containers[sessionID]?.terminal.promptReadySnapshot == true
+    }
+
+    @discardableResult
+    func sendProgrammaticInput(
+        sessionID: UUID,
+        text: String,
+        execute: Bool
+    ) -> Bool {
+        guard !text.isEmpty,
+              let terminal = containers[sessionID]?.terminal else {
+            return false
+        }
+        return terminal.handleProgrammaticInput(
+            TerminalInputRequest(
+                sessionID: sessionID,
+                text: text,
+                execute: execute
+            )
+        )
+    }
+
+    func forceInterruptOrRestart(
+        sessionID: UUID
+    ) -> TerminalForceInterruptResult {
+        if let terminal = containers[sessionID]?.terminal,
+           terminal.process.running {
+            return terminal.forceInterruptAndRecover()
+        }
+        if coordinators[sessionID]?.restartProcessIfNeeded() == true {
+            return .restartedSession
+        }
+        return .unavailable
+    }
+
     func noteProcessStarted(sessionID: UUID, container: ApexTerminalContainerView) {
         record(
             "process:\(sessionID.uuidString):pid=\(container.terminal.process.shellPid)"
@@ -589,6 +641,7 @@ final class TerminalPaneRuntimeStore {
         container?.terminal.onHostData = nil
         container?.terminal.onCommandCaptured = nil
         container?.terminal.onCaptureStateChanged = nil
+        container?.terminal.onPromptReadinessChanged = nil
         container?.terminal.processDelegate = nil
         container?.terminal.terminateSession(
             scope: coordinator?.terminationScope ?? .processOnly
@@ -1090,12 +1143,20 @@ enum TerminalProcessTerminationScope {
     case processGroup
 }
 
+enum TerminalForceInterruptResult: Equatable {
+    case unavailable
+    case sentControlC
+    case signalledForegroundProcessGroup(pid_t)
+    case restartedSession
+}
+
 final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
     var onHostData: ((ArraySlice<UInt8>) -> Void)?
     var onCommandCaptured: ((CommandExecutionRecord) -> Void)?
     var onCaptureStateChanged: (() -> Void)?
     var onPromptStarted: ((Int) -> Void)?
     var onTerminalRowsShifted: ((Int) -> Void)?
+    var onPromptReadinessChanged: ((Bool) -> Void)?
     var commandBlocksEnabled = true
     var smartPasteProtectionEnabled = true
     var multilinePasteConfirmationEnabled = false
@@ -1111,6 +1172,8 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
     private var scrollProbeMarker: String?
     private var focusTask: Task<Void, Never>?
     private var resizeSyncTask: Task<Void, Never>?
+    private var promptReadinessTask: Task<Void, Never>?
+    private var lastReportedPromptReadiness = false
     private var controlCRecoveryTask: Task<Void, Never>?
     private var controlCRecoveryArmedUntil: Date?
     private var controlCRecoveryAllowsAlternateScreen = false
@@ -1148,6 +1211,17 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
 
     var hasCurrentCommandPayload: Bool {
         !currentCommandText.isEmpty || !currentOutputText.isEmpty
+    }
+
+    var promptReadySnapshot: Bool {
+        guard process.running,
+              !terminal.isCurrentBufferAlternate else {
+            return false
+        }
+        let data = terminal.getBufferAsData(kind: .active)
+        return TerminalPromptHeuristic.isPromptReady(
+            bufferText: String(decoding: data, as: UTF8.self)
+        )
     }
 
     var currentCommandAndOutput: String {
@@ -1196,15 +1270,24 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
     @discardableResult
     func handleProgrammaticInput(_ request: TerminalInputRequest) -> Bool {
         guard programmaticInputEnabled, process.running else { return false }
+        reportPromptReadiness(false)
         requestFocusWhenReady()
         var text = request.text
         if request.execute && !text.hasSuffix("\n") {
             text += "\n"
         }
-        insertText(
-            text,
-            replacementRange: NSRange(location: 0, length: 0)
-        )
+        if request.execute {
+            // Programmatic execution must not depend on AppKit first-responder or
+            // IME state. Write the command bytes to the PTY directly, exactly as a
+            // physical terminal would after the user presses Return.
+            let bytes = Array(text.utf8)
+            send(source: self, data: bytes[...])
+        } else {
+            insertText(
+                text,
+                replacementRange: NSRange(location: 0, length: 0)
+            )
+        }
         return true
     }
 
@@ -1239,6 +1322,9 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
         kittyGraphicsFilter.resetStreamState()
         sixelFilter.resetStreamState()
         streamParser = ShellIntegrationStreamParser()
+        promptReadinessTask?.cancel()
+        promptReadinessTask = nil
+        reportPromptReadiness(false)
         setProgrammaticInputEnabled(false)
         resetCapture()
     }
@@ -1248,6 +1334,9 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
         cancelPendingFocusRequest()
         resizeSyncTask?.cancel()
         resizeSyncTask = nil
+        promptReadinessTask?.cancel()
+        promptReadinessTask = nil
+        reportPromptReadiness(false)
         cancelControlCRecovery()
         trustFilter.resetStreamState()
         inlineImageFilter.resetStreamState()
@@ -1276,6 +1365,58 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
         terminal.feed(text: "\u{001B}[?1000l\u{001B}[?1002l\u{001B}[?1003l\u{001B}[?1006l")
         terminal.feed(text: "\u{001B}[?1004l\u{001B}[?2004l\u{001B}[?2026l")
         terminal.feed(text: "\u{001B}[?1l\u{001B}>\u{001B}[?1049l\u{001B}[<17u\u{001B}[?25h")
+    }
+
+    @discardableResult
+    func forceInterruptAndRecover() -> TerminalForceInterruptResult {
+        guard process.running else { return .unavailable }
+        cancelControlCRecovery()
+
+        if let processSession = LocalTerminalProcessSession(rootPID: process.shellPid),
+           let group = processSession.signalForegroundJob(SIGINT) {
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(250))
+                guard let self else { return }
+                if processSession.foregroundJobProcessGroup() == group {
+                    _ = Darwin.kill(-group, SIGTERM)
+                    try? await Task.sleep(for: .milliseconds(500))
+                }
+                if processSession.foregroundJobProcessGroup() == group {
+                    _ = Darwin.kill(-group, SIGKILL)
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+                finishForcedInterruptRecovery(restoreTTYState: true)
+            }
+            return .signalledForegroundProcessGroup(group)
+        }
+
+        // Dedicated SSH sessions may expose the SSH client itself as the PTY root
+        // process, so there is no child foreground group to signal safely. Send the
+        // actual terminal interrupt bytes twice, then a newline, without fabricating
+        // a prompt. The remote shell or reconnect state remains the source of truth.
+        send(source: self, data: [0x03, 0x03, 0x0A][...])
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(180))
+            self?.finishForcedInterruptRecovery(restoreTTYState: false)
+        }
+        return .sentControlC
+    }
+
+    private func finishForcedInterruptRecovery(restoreTTYState: Bool) {
+        recoverTerminalModesAfterProcessExit()
+        guard process.running else { return }
+        if restoreTTYState {
+            // A broken TUI may have left the PTY line discipline in raw/no-ISIG
+            // mode. The explicit force-recovery action is allowed to normalize it,
+            // but only after the foreground job has been released. Ctrl-U clears a
+            // possible partial shell line; the real prompt remains shell-generated.
+            let recovery = [UInt8(0x15)]
+                + Array("stty sane >/dev/null 2>&1\n".utf8)
+            send(source: self, data: recovery[...])
+        } else {
+            send(source: self, data: [0x0A][...])
+        }
+        requestFocusWhenReady()
     }
 
     private func terminateLocalProcessSessionIfSafe() {
@@ -1657,27 +1798,55 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
         if shiftedRows > 0 {
             onTerminalRowsShifted?(shiftedRows)
         }
+        schedulePromptReadinessInspection()
     }
 
     func handleSemanticEvent(_ event: ShellSemanticEvent) {
         switch event {
         case .promptStarted:
             cancelControlCRecovery()
+            promptReadinessTask?.cancel()
+            promptReadinessTask = nil
             clearResidualKittyKeyboardModeAtPrompt()
+            reportPromptReadiness(true)
         case .commandInputStarted:
+            promptReadinessTask?.cancel()
+            promptReadinessTask = nil
             onPromptStarted?(terminal.buffer.y)
+            reportPromptReadiness(true)
         case let .commandCaptured(command):
+            reportPromptReadiness(false)
             capturedCommand = command
             capturedOutput.removeAll(keepingCapacity: true)
             commandStartedAt = Date()
             outputWasTruncated = false
             notifyCaptureStateChanged()
         case .commandExecuted:
+            reportPromptReadiness(false)
             isCapturingOutput = true
             notifyCaptureStateChanged()
         case let .commandFinished(exitCode):
+            reportPromptReadiness(false)
             isCapturingOutput = false
             finalizeCapturedCommand(exitCode: exitCode ?? 0)
+        }
+    }
+
+    private func schedulePromptReadinessInspection() {
+        promptReadinessTask?.cancel()
+        promptReadinessTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(140))
+            guard !Task.isCancelled, let self, process.running else { return }
+            promptReadinessTask = nil
+            reportPromptReadiness(promptReadySnapshot)
+        }
+    }
+
+    private func reportPromptReadiness(_ ready: Bool) {
+        guard ready != lastReportedPromptReadiness else { return }
+        lastReportedPromptReadiness = ready
+        DispatchQueue.main.async { [weak self] in
+            self?.onPromptReadinessChanged?(ready)
         }
     }
 

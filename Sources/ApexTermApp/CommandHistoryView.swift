@@ -191,7 +191,7 @@ struct CommandActionMenu: NSViewRepresentable {
 
         let iconItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
         iconItem.image = NSImage(
-            systemSymbolName: "circle.fill",
+            systemSymbolName: "ellipsis.circle",
             accessibilityDescription: "Command actions"
         )
         menu.addItem(iconItem)
@@ -280,12 +280,26 @@ private struct TerminalCommandBlockCard: View {
         ) {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .top, spacing: 7) {
-                    CommandActionMenu(
-                        record: record,
-                        isExpanded: isExpanded,
-                        onToggle: onToggle
-                    )
-                    .padding(.top, 2)
+                    VStack(spacing: 3) {
+                        CommandActionMenu(
+                            record: record,
+                            isExpanded: isExpanded,
+                            onToggle: onToggle
+                        )
+                        .frame(width: 22, height: 22)
+
+                        Button(action: copyOutput) {
+                            Image(systemName: "doc.on.clipboard")
+                                .font(.system(size: 9, weight: .semibold))
+                                .frame(width: 20, height: 18)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(record.output.isEmpty)
+                        .foregroundStyle(record.output.isEmpty ? Color.secondary.opacity(0.35) : Color.accentColor)
+                        .help(record.output.isEmpty ? "出力はまだありません" : "出力だけをコピー")
+                        .accessibilityLabel("出力だけをコピー")
+                        .accessibilityIdentifier("command-output-copy-\(record.id.uuidString)")
+                    }
 
                     VStack(alignment: .leading, spacing: 5) {
                         Text(singleLineCommand)

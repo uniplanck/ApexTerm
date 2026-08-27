@@ -71,6 +71,12 @@ final class AppModel: ObservableObject {
     @Published var selectedAgentChatID: UUID?
     @Published private(set) var agentChatFocusRequestGeneration: UInt64 = 0
     @Published private(set) var commandStatusBySession: [UUID: String] = [:]
+    @Published private(set) var shellPromptReadySessionIDs: Set<UUID> = []
+    @Published private(set) var remoteInteractiveSessionIDs: Set<UUID> = []
+    @Published private(set) var activeCommandBySession: [UUID: String] = [:]
+    @Published private(set) var commandTranscriptModeOverrides: [UUID: CommandTranscriptMode] = [:]
+    @Published var terminalConversationDrafts: [UUID: String] = [:]
+    @Published private(set) var scheduledTerminalCommands: [ScheduledTerminalCommand] = []
     @Published private(set) var commandHistory: [CommandExecutionRecord] = []
     @Published private(set) var collapsedCommandIDs: Set<UUID> = []
     @Published private(set) var commandPresets: [TerminalCommandPreset] = []
@@ -349,6 +355,7 @@ final class AppModel: ObservableObject {
     private var directAutomationRequests: [UUID: DirectTerminalAutomationRequest] = [:]
     private var agentChatSaveTask: Task<Void, Never>?
     private var settingsSaveTask: Task<Void, Never>?
+    private var scheduledCommandLoopTask: Task<Void, Never>?
     private var isApplyingSettingsDocument = false
     private var metadataSaveTask: Task<Void, Never>?
     private var tmuxRefreshTask: Task<Void, Never>?
@@ -357,6 +364,7 @@ final class AppModel: ObservableObject {
     private var deliveredAgentChatCallbacks: Set<UUID> = []
     private var agentEventFingerprints: [UUID: String] = [:]
     private static let mainTabOrderDefaultsKey = "apexterm.mainTabOrder.v1"
+    private static let scheduledCommandsDefaultsKey = "apexterm.scheduledTerminalCommands.v1"
 
     init() {
         let supportDirectory = ApexTermPaths.supportDirectory()
@@ -490,6 +498,7 @@ final class AppModel: ObservableObject {
         self.eventStore = eventStore
         self.commandHistoryRecorder = commandHistoryRecorder
         self.commandHistory = commandHistoryRecorder.snapshot()
+        self.scheduledTerminalCommands = Self.loadScheduledTerminalCommands()
         self.agentChatStoreURL = agentChatStoreURL
         self.agentChatTabs = loadedAgentChatTabs
         self.mainTabOrder = MainTabOrder.normalized(
@@ -518,6 +527,7 @@ final class AppModel: ObservableObject {
         _ = SecureKeyboardEntryController.shared.setEnabled(
             secureKeyboardEntryEnabled
         )
+        resumeScheduledTerminalCommands()
     }
 
     var terminalProfiles: [ApexTerminalProfile] {
@@ -2485,6 +2495,40 @@ final class AppModel: ObservableObject {
     func recordSemanticEvents(_ events: [ShellSemanticEvent], sessionID: UUID) {
         guard !events.isEmpty else { return }
         commandStatusBySession[sessionID] = statusLabel(for: events.last!)
+
+        var readySessions = shellPromptReadySessionIDs
+        var remoteSessions = remoteInteractiveSessionIDs
+        var activeCommands = activeCommandBySession
+
+        for event in events {
+            switch event {
+            case .promptStarted, .commandInputStarted:
+                readySessions.insert(sessionID)
+            case let .commandCaptured(command):
+                readySessions.remove(sessionID)
+                activeCommands[sessionID] = command
+                if TerminalConversationPolicy.commandStartsRemoteInteractiveSession(command) {
+                    remoteSessions.insert(sessionID)
+                }
+            case .commandExecuted:
+                readySessions.remove(sessionID)
+            case .commandFinished:
+                readySessions.remove(sessionID)
+                remoteSessions.remove(sessionID)
+                activeCommands.removeValue(forKey: sessionID)
+            }
+        }
+
+        if readySessions != shellPromptReadySessionIDs {
+            shellPromptReadySessionIDs = readySessions
+        }
+        if remoteSessions != remoteInteractiveSessionIDs {
+            remoteInteractiveSessionIDs = remoteSessions
+        }
+        if activeCommands != activeCommandBySession {
+            activeCommandBySession = activeCommands
+        }
+
         Task { [commandBoundaryIndex] in
             await commandBoundaryIndex.append(events, sessionID: sessionID)
         }
@@ -2492,6 +2536,216 @@ final class AppModel: ObservableObject {
 
     func commandStatus(sessionID: UUID) -> String? {
         commandStatusBySession[sessionID]
+    }
+
+    func commandTranscriptMode(for sessionID: UUID) -> CommandTranscriptMode {
+        let kind = session(id: sessionID)?.kind ?? .local
+        return TerminalConversationPolicy.resolvesTranscriptMode(
+            baseMode: commandTranscriptMode,
+            sessionKind: kind,
+            remoteInteractiveCommandActive: remoteInteractiveSessionIDs.contains(sessionID),
+            userOverride: commandTranscriptModeOverrides[sessionID]
+        )
+    }
+
+    func setCommandTranscriptMode(
+        _ mode: CommandTranscriptMode,
+        for sessionID: UUID
+    ) {
+        commandTranscriptModeOverrides[sessionID] = mode
+        if mode == .ex {
+            collapsedCommandIDs.formUnion(
+                commandHistory.lazy
+                    .filter { $0.sessionID == sessionID }
+                    .map(\.id)
+            )
+        }
+    }
+
+    func cycleCommandTranscriptMode(for sessionID: UUID) {
+        setCommandTranscriptMode(
+            commandTranscriptMode(for: sessionID).next,
+            for: sessionID
+        )
+    }
+
+    func clearCommandTranscriptModeOverride(for sessionID: UUID) {
+        commandTranscriptModeOverrides.removeValue(forKey: sessionID)
+    }
+
+    func isShellPromptReady(sessionID: UUID) -> Bool {
+        shellPromptReadySessionIDs.contains(sessionID)
+            || TerminalPaneRuntimeStore.shared.isPromptReady(sessionID: sessionID)
+    }
+
+    func supportsConversationComposer(sessionID: UUID) -> Bool {
+        guard let session = session(id: sessionID) else { return false }
+        return TerminalConversationPolicy.supportsComposer(
+            sessionKind: session.kind,
+            shellPromptReady: isShellPromptReady(sessionID: sessionID),
+            remoteInteractiveCommandActive: remoteInteractiveSessionIDs.contains(sessionID)
+        )
+    }
+
+    func updatePromptReadiness(_ ready: Bool, sessionID: UUID) {
+        guard session(id: sessionID) != nil else { return }
+        var readySessions = shellPromptReadySessionIDs
+        if ready {
+            readySessions.insert(sessionID)
+            if commandStatusBySession[sessionID] == "強制停止中" {
+                commandStatusBySession[sessionID] = "Ready"
+            }
+        } else {
+            readySessions.remove(sessionID)
+        }
+        if readySessions != shellPromptReadySessionIDs {
+            shellPromptReadySessionIDs = readySessions
+        }
+    }
+
+    @discardableResult
+    func sendConversationCommand(sessionID: UUID) -> Bool {
+        let draft = terminalConversationDrafts[sessionID] ?? ""
+        let command = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !command.isEmpty else { return false }
+        guard supportsConversationComposer(sessionID: sessionID) else {
+            showTransientNotice("プロンプトへ戻るまで送信できません")
+            return false
+        }
+        let accepted = TerminalPaneRuntimeStore.shared.sendProgrammaticInput(
+            sessionID: sessionID,
+            text: command,
+            execute: true
+        )
+        guard accepted else {
+            showTransientNotice("端末入力を送信できませんでした")
+            return false
+        }
+        shellPromptReadySessionIDs.remove(sessionID)
+        terminalConversationDrafts[sessionID] = ""
+        return true
+    }
+
+    @discardableResult
+    func scheduleConversationCommand(
+        sessionID: UUID,
+        command: String,
+        at requestedDate: Date
+    ) -> Bool {
+        guard session(id: sessionID) != nil else { return false }
+        let scheduled = ScheduledTerminalCommand(
+            sessionID: sessionID,
+            command: command,
+            scheduledAt: ScheduledTerminalCommandPolicy.normalizedFireDate(
+                requested: requestedDate
+            )
+        )
+        guard scheduled.isValid else { return false }
+        scheduledTerminalCommands.append(scheduled)
+        scheduledTerminalCommands.sort { $0.scheduledAt < $1.scheduledAt }
+        persistScheduledTerminalCommands()
+        ensureScheduledCommandLoop()
+        showTransientNotice("時間指定送信を予約しました")
+        return true
+    }
+
+    func cancelScheduledTerminalCommand(id: UUID) {
+        scheduledTerminalCommands.removeAll { $0.id == id }
+        persistScheduledTerminalCommands()
+    }
+
+    func scheduledCommands(sessionID: UUID) -> [ScheduledTerminalCommand] {
+        scheduledTerminalCommands
+            .filter { $0.sessionID == sessionID }
+            .sorted { $0.scheduledAt < $1.scheduledAt }
+    }
+
+    private func ensureScheduledCommandLoop() {
+        guard scheduledCommandLoopTask == nil,
+              !scheduledTerminalCommands.isEmpty else {
+            return
+        }
+
+        scheduledCommandLoopTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.scheduledCommandLoopTask = nil }
+
+            while !Task.isCancelled {
+                let now = Date()
+                let dueCommands = self.scheduledTerminalCommands.filter {
+                    $0.scheduledAt <= now
+                }
+                var completedIDs: Set<UUID> = []
+
+                for scheduled in dueCommands {
+                    guard let session = self.session(id: scheduled.sessionID) else {
+                        completedIDs.insert(scheduled.id)
+                        continue
+                    }
+
+                    let shouldSend = ScheduledTerminalCommandPolicy.shouldSend(
+                        sessionKind: session.kind,
+                        processRunning: TerminalPaneRuntimeStore.shared.isProcessRunning(
+                            sessionID: scheduled.sessionID
+                        ),
+                        shellPromptReady: self.isShellPromptReady(
+                            sessionID: scheduled.sessionID
+                        ),
+                        remoteInteractiveCommandActive: self.remoteInteractiveSessionIDs.contains(
+                            scheduled.sessionID
+                        )
+                    )
+                    guard shouldSend else { continue }
+
+                    let accepted = TerminalPaneRuntimeStore.shared.sendProgrammaticInput(
+                        sessionID: scheduled.sessionID,
+                        text: scheduled.command,
+                        execute: true
+                    )
+                    if accepted {
+                        self.shellPromptReadySessionIDs.remove(scheduled.sessionID)
+                        completedIDs.insert(scheduled.id)
+                        self.showTransientNotice("予約コマンドを送信しました")
+                    }
+                }
+
+                if !completedIDs.isEmpty {
+                    self.scheduledTerminalCommands.removeAll {
+                        completedIDs.contains($0.id)
+                    }
+                    self.persistScheduledTerminalCommands()
+                }
+
+                if self.scheduledTerminalCommands.isEmpty {
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+        }
+    }
+
+    private func resumeScheduledTerminalCommands() {
+        scheduledTerminalCommands = scheduledTerminalCommands.filter {
+            session(id: $0.sessionID) != nil && $0.isValid
+        }
+        persistScheduledTerminalCommands()
+        ensureScheduledCommandLoop()
+    }
+
+    private static func loadScheduledTerminalCommands() -> [ScheduledTerminalCommand] {
+        guard let data = UserDefaults.standard.data(forKey: scheduledCommandsDefaultsKey),
+              let decoded = try? JSONDecoder().decode(
+                  [ScheduledTerminalCommand].self,
+                  from: data
+              ) else {
+            return []
+        }
+        return decoded.filter(\.isValid).sorted { $0.scheduledAt < $1.scheduledAt }
+    }
+
+    private func persistScheduledTerminalCommands() {
+        guard let data = try? JSONEncoder().encode(scheduledTerminalCommands) else { return }
+        UserDefaults.standard.set(data, forKey: Self.scheduledCommandsDefaultsKey)
     }
 
     func recentCommands(sessionID: UUID? = nil, limit: Int = 3) -> [CommandExecutionRecord] {
@@ -2534,6 +2788,33 @@ final class AppModel: ObservableObject {
         commandTranscriptMode = commandTranscriptMode.next
     }
 
+    func toggleAutoCopyCommandOutput() {
+        autoCopyCommandOutputEnabled.toggle()
+        showTransientNotice(
+            autoCopyCommandOutputEnabled
+                ? "出力の自動コピーをONにしました"
+                : "出力の自動コピーをOFFにしました"
+        )
+    }
+
+    func forceInterruptAndRecover(sessionID: UUID) {
+        shellPromptReadySessionIDs.remove(sessionID)
+        commandStatusBySession[sessionID] = "強制停止中"
+        let result = TerminalPaneRuntimeStore.shared.forceInterruptOrRestart(
+            sessionID: sessionID
+        )
+        switch result {
+        case .unavailable:
+            showTransientNotice("端末プロセスを復旧できませんでした")
+        case .sentControlC:
+            showTransientNotice("Ctrl+Cを強制送信しました")
+        case .signalledForegroundProcessGroup:
+            showTransientNotice("前面プロセスを強制停止しています")
+        case .restartedSession:
+            showTransientNotice("端末セッションを再起動しました")
+        }
+    }
+
     private func showTransientNotice(_ message: String) {
         transientNoticeGeneration &+= 1
         let generation = transientNoticeGeneration
@@ -2560,7 +2841,7 @@ final class AppModel: ObservableObject {
         if autoCopyCommandOutputEnabled {
             ClipboardWriter.copy(record.output)
         }
-        if commandTranscriptMode == .ex || commandBlocksStartCollapsed {
+        if commandTranscriptMode(for: record.sessionID) == .ex || commandBlocksStartCollapsed {
             collapsedCommandIDs.insert(record.id)
         } else if autoCollapseLargeOutputsEnabled {
             let lineCount = record.output.split(
@@ -3429,8 +3710,28 @@ final class AppModel: ObservableObject {
     private func commitState() {
         metadataSaveTask?.cancel()
         metadataSaveTask = nil
+        let liveSessionIDs = Set(sessions.map(\.id))
+        shellPromptReadySessionIDs.formIntersection(liveSessionIDs)
+        remoteInteractiveSessionIDs.formIntersection(liveSessionIDs)
+        activeCommandBySession = activeCommandBySession.filter {
+            liveSessionIDs.contains($0.key)
+        }
+        commandTranscriptModeOverrides = commandTranscriptModeOverrides.filter {
+            liveSessionIDs.contains($0.key)
+        }
+        terminalConversationDrafts = terminalConversationDrafts.filter {
+            liveSessionIDs.contains($0.key)
+        }
+        let staleScheduledIDs = scheduledTerminalCommands
+            .filter { !liveSessionIDs.contains($0.sessionID) }
+            .map(\.id)
+        if !staleScheduledIDs.isEmpty {
+            let staleSet = Set(staleScheduledIDs)
+            scheduledTerminalCommands.removeAll { staleSet.contains($0.id) }
+            persistScheduledTerminalCommands()
+        }
         TerminalPaneRuntimeStore.shared.scheduleRetainOnly(
-            sessionIDs: Set(sessions.map(\.id))
+            sessionIDs: liveSessionIDs
         )
         normalizeMainTabOrder()
         refreshAutomationStatus()

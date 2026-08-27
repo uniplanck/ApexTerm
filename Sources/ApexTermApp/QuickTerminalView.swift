@@ -468,6 +468,7 @@ private struct QuickTerminalGroupView: View {
                         code.map { $0 == 0 ? "Done" : "Exit \($0)" } ?? "Done"
                     }
                 },
+                onPromptReadinessChange: { _ in },
                 onCommandCaptured: { record in
                     guard autoCopyCommandOutputEnabled else { return }
                     ClipboardWriter.copy(record.output)

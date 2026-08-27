@@ -275,6 +275,106 @@ private struct CommandTranscriptModeCycleButton: NSViewRepresentable {
     }
 }
 
+private struct TerminalScheduleControl: View {
+    let sessionID: UUID
+    @ObservedObject var model: AppModel
+
+    @State private var isPresented = false
+    @State private var command = ""
+    @State private var scheduledAt = Date().addingTimeInterval(60)
+
+    var body: some View {
+        Button {
+            scheduledAt = max(Date().addingTimeInterval(60), scheduledAt)
+            isPresented = true
+        } label: {
+            ZStack(alignment: .topTrailing) {
+                Image(systemName: "clock")
+                    .font(.system(size: 11, weight: .medium))
+                    .frame(width: 20, height: 20)
+                if !model.scheduledCommands(sessionID: sessionID).isEmpty {
+                    Circle()
+                        .fill(Color.accentColor)
+                        .frame(width: 5, height: 5)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .help("時間を指定してコマンドを送信")
+        .accessibilityLabel("時間指定送信")
+        .accessibilityIdentifier("terminal-schedule-button-\(sessionID.uuidString)")
+        .popover(isPresented: $isPresented, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("時間指定送信")
+                    .font(.headline)
+                TextEditor(text: $command)
+                    .font(.caption.monospaced())
+                    .frame(minHeight: 72, maxHeight: 110)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+                    }
+                    .accessibilityLabel("予約するコマンド")
+                DatePicker(
+                    "送信時刻",
+                    selection: $scheduledAt,
+                    in: Date()...,
+                    displayedComponents: [.date, .hourAndMinute]
+                )
+                .datePickerStyle(.compact)
+
+                let scheduled = model.scheduledCommands(sessionID: sessionID)
+                if !scheduled.isEmpty {
+                    Divider()
+                    Text("予約中")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    ForEach(scheduled.prefix(4)) { item in
+                        HStack(spacing: 6) {
+                            Text(item.scheduledAt.formatted(.dateTime.month().day().hour().minute()))
+                                .font(.caption2.monospacedDigit())
+                            Text(item.command.replacingOccurrences(of: "\n", with: " "))
+                                .font(.caption2.monospaced())
+                                .lineLimit(1)
+                            Spacer(minLength: 4)
+                            Button {
+                                model.cancelScheduledTerminalCommand(id: item.id)
+                            } label: {
+                                Image(systemName: "xmark")
+                            }
+                            .buttonStyle(.plain)
+                            .help("予約を取り消す")
+                        }
+                    }
+                }
+
+                HStack {
+                    Spacer()
+                    Button("キャンセル") {
+                        isPresented = false
+                    }
+                    Button("予約") {
+                        let normalized = command.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !normalized.isEmpty else { return }
+                        if model.scheduleConversationCommand(
+                            sessionID: sessionID,
+                            command: normalized,
+                            at: scheduledAt
+                        ) {
+                            command = ""
+                            isPresented = false
+                        }
+                    }
+                    .disabled(command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .keyboardShortcut(.defaultAction)
+                }
+            }
+            .padding(14)
+            .frame(width: 360)
+        }
+    }
+}
+
 struct SplitTreeView: View {
     let workspaceID: UUID
     let node: SplitNode
@@ -418,8 +518,19 @@ struct SplitTreeView: View {
 
             HStack(spacing: 4) {
                 if isFocused {
-                    CommandTranscriptModeCycleButton(mode: $model.commandTranscriptMode)
-                        .frame(width: 30, height: 20)
+                    autoCopyOutputButton(sessionID: selectedSessionID)
+                    forceInterruptButton(sessionID: selectedSessionID)
+                    TerminalScheduleControl(
+                        sessionID: selectedSessionID,
+                        model: model
+                    )
+                    CommandTranscriptModeCycleButton(
+                        mode: Binding(
+                            get: { model.commandTranscriptMode(for: selectedSessionID) },
+                            set: { model.setCommandTranscriptMode($0, for: selectedSessionID) }
+                        )
+                    )
+                    .frame(width: 30, height: 20)
                 }
                 columnAddButton(anchorSessionID: selectedSessionID)
             }
@@ -445,6 +556,7 @@ struct SplitTreeView: View {
             Circle()
                 .fill(statusColor(for: session.state))
                 .frame(width: 7, height: 7)
+                .help(statusDescription(for: session.state))
             if isSelected {
                 Button {
                     model.closeSession(id: session.id)
@@ -551,6 +663,49 @@ struct SplitTreeView: View {
         .frame(width: 22, height: 22)
     }
 
+    private func autoCopyOutputButton(sessionID: UUID) -> some View {
+        Button {
+            model.toggleAutoCopyCommandOutput()
+        } label: {
+            Image(
+                systemName: model.autoCopyCommandOutputEnabled
+                    ? "doc.on.clipboard.fill"
+                    : "doc.on.clipboard"
+            )
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(
+                model.autoCopyCommandOutputEnabled
+                    ? Color.accentColor
+                    : Color.secondary
+            )
+            .frame(width: 20, height: 20)
+        }
+        .buttonStyle(.plain)
+        .help(
+            model.autoCopyCommandOutputEnabled
+                ? "出力の自動コピー: ON。クリックでOFF"
+                : "出力の自動コピー: OFF。クリックでON"
+        )
+        .accessibilityLabel("出力の自動コピー")
+        .accessibilityValue(model.autoCopyCommandOutputEnabled ? "ON" : "OFF")
+        .accessibilityIdentifier("auto-copy-output-button-\(sessionID.uuidString)")
+    }
+
+    private func forceInterruptButton(sessionID: UUID) -> some View {
+        Button {
+            model.forceInterruptAndRecover(sessionID: sessionID)
+        } label: {
+            Image(systemName: "stop.circle")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color.red)
+                .frame(width: 20, height: 20)
+        }
+        .buttonStyle(.plain)
+        .help("前面プロセスを強制停止。端末が終了済みならセッションを再起動")
+        .accessibilityLabel("強制停止と端末復旧")
+        .accessibilityIdentifier("force-interrupt-button-\(sessionID.uuidString)")
+    }
+
     @ViewBuilder
     private func pane(
         sessionID: UUID,
@@ -560,12 +715,13 @@ struct SplitTreeView: View {
     ) -> some View {
         if let session = model.session(id: sessionID) {
             GeometryReader { proxy in
-                let transcriptMode = model.commandTranscriptMode
+                let transcriptMode = model.commandTranscriptMode(for: session.id)
                 let recentCommands = model.recentCommands(
                     sessionID: session.id,
                     limit: transcriptMode.recordLimit
                 )
-                let showsTranscript = transcriptMode.showsTranscript
+                let showsTranscript = transcriptMode != .ex
+                    && transcriptMode.showsTranscript
                     && !recentCommands.isEmpty
                 let minimumLivePaneHeight: CGFloat = 76
                 let maximumLivePaneHeight = max(
@@ -608,6 +764,7 @@ struct SplitTreeView: View {
                                 Circle()
                                     .fill(statusColor(for: session.state))
                                     .frame(width: 7, height: 7)
+                                    .help(statusDescription(for: session.state))
                                 Text(session.title)
                                     .font(.caption.weight(.medium))
                                     .lineLimit(1)
@@ -619,9 +776,14 @@ struct SplitTreeView: View {
                                     .fixedSize(horizontal: true, vertical: false)
 
                                 commandPresetMenu(sessionID: session.id)
+                                autoCopyOutputButton(sessionID: session.id)
+                                forceInterruptButton(sessionID: session.id)
 
                                 CommandTranscriptModeCycleButton(
-                                    mode: $model.commandTranscriptMode
+                                    mode: Binding(
+                                        get: { model.commandTranscriptMode(for: session.id) },
+                                        set: { model.setCommandTranscriptMode($0, for: session.id) }
+                                    )
                                 )
                                 .frame(width: 30, height: 20)
                                 .padding(.trailing, 2)
@@ -738,7 +900,7 @@ struct SplitTreeView: View {
                                 smartPasteProtectionEnabled: model.smartPasteProtectionEnabled,
                                 multilinePasteConfirmationEnabled: model.multilinePasteConfirmationEnabled
                             ),
-                            isActive: isActive,
+                            isActive: isActive && transcriptMode != .ex,
                             onTitleChange: { title in
                                 model.updateTerminalTitle(title, sessionID: session.id)
                             },
@@ -753,6 +915,9 @@ struct SplitTreeView: View {
                                     model.recordSemanticEvents(events, sessionID: session.id)
                                 }
                             },
+                            onPromptReadinessChange: { ready in
+                                model.updatePromptReadiness(ready, sessionID: session.id)
+                            },
                             onCommandCaptured: { record in
                                 model.recordCommandExecution(record)
                             },
@@ -766,7 +931,38 @@ struct SplitTreeView: View {
                             maxHeight: showsTranscript ? effectiveLivePaneHeight : .infinity
                         )
                         .layoutPriority(showsTranscript ? 0 : 1)
+                        .opacity(transcriptMode == .ex ? 0 : 1)
+                        .accessibilityHidden(transcriptMode == .ex)
                         .id(session.id)
+                    }
+
+                    if transcriptMode == .ex {
+                        TerminalConversationView(
+                            records: recentCommands,
+                            appearance: model.terminalAppearance,
+                            fontSize: model.terminalFontSize,
+                            draft: Binding(
+                                get: { model.terminalConversationDrafts[session.id] ?? "" },
+                                set: { model.terminalConversationDrafts[session.id] = $0 }
+                            ),
+                            isReady: model.supportsConversationComposer(sessionID: session.id),
+                            scheduledCommands: model.scheduledCommands(sessionID: session.id),
+                            onSend: {
+                                _ = model.sendConversationCommand(sessionID: session.id)
+                            },
+                            onSchedule: { command, date in
+                                _ = model.scheduleConversationCommand(
+                                    sessionID: session.id,
+                                    command: command,
+                                    at: date
+                                )
+                            },
+                            onCancelScheduled: { id in
+                                model.cancelScheduledTerminalCommand(id: id)
+                            }
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .zIndex(8)
                     }
 
                     NativePaneDropTarget(
@@ -996,6 +1192,25 @@ struct SplitTreeView: View {
             .red
         case .created, .detached:
             .secondary
+        }
+    }
+
+    private func statusDescription(for state: SessionState) -> String {
+        switch state {
+        case .attached:
+            "接続中。端末プロセスは動作しています"
+        case .starting:
+            "端末プロセスを起動中"
+        case .reconnecting:
+            "接続を復旧中"
+        case .failed:
+            "起動または接続に失敗。赤丸はコマンド失敗ではなく端末状態です"
+        case .exited:
+            "端末プロセスが終了済み。Ctrl+Cを受け取るプロセスはありません"
+        case .created:
+            "端末を作成済み。まだ接続していません"
+        case .detached:
+            "端末から切断されています"
         }
     }
 }

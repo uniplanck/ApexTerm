@@ -407,6 +407,7 @@ struct RootView: View {
             await runCopyProbeIfRequested()
             await runShortcutActionsProbeIfRequested()
             await runCommandBlockProbeIfRequested()
+            await runConversationModeProbeIfRequested()
             await runLanguageProbeIfRequested()
             await runReadmeScreenshotSceneIfRequested()
             await runComposerAlignmentProbeIfRequested()
@@ -1761,6 +1762,305 @@ struct RootView: View {
             }
         }
         return nil
+    }
+
+    @MainActor
+    private func runConversationModeProbeIfRequested() async {
+        let environment = ProcessInfo.processInfo.environment
+        guard let outputPath = environment["APEXTERM_CONVERSATION_PROBE_FILE"],
+              !outputPath.isEmpty else {
+            return
+        }
+
+        var targetSessionID: UUID?
+        for _ in 0..<240 {
+            if let sessionID = model.selectedSessionID,
+               TerminalPaneRuntimeStore.shared.isProcessRunning(sessionID: sessionID),
+               model.isShellPromptReady(sessionID: sessionID) {
+                targetSessionID = sessionID
+                break
+            }
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+
+        guard let sessionID = targetSessionID else {
+            let selectedSessionID = model.selectedSessionID
+            let container = selectedSessionID.flatMap {
+                TerminalPaneRuntimeStore.shared.container(for: $0)
+            }
+            let processRunning = container?.terminal.process.running == true
+            let bufferData = container?.terminal.terminal.getBufferAsData(kind: .active) ?? Data()
+            let bufferText = String(decoding: bufferData, as: UTF8.self)
+            let heuristicReady = TerminalPromptHeuristic.isPromptReady(bufferText: bufferText)
+            let lastNonEmptyLine = bufferText
+                .split(separator: "\n", omittingEmptySubsequences: false)
+                .reversed()
+                .map(String.init)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .first(where: { !$0.isEmpty }) ?? ""
+            writeProbeResult([
+                "session_ready=0",
+                "selected_session=\(selectedSessionID != nil ? 1 : 0)",
+                "process_running=\(processRunning ? 1 : 0)",
+                "heuristic_ready=\(heuristicReady ? 1 : 0)",
+                "buffer_characters=\(bufferText.count)",
+                "last_line_base64=\(Data(lastNonEmptyLine.utf8).base64EncodedString())",
+                "conversation_visible=0",
+                "command_rendered=0",
+                "output_rendered=0",
+                "send_lock=0",
+                "scheduled_send=0",
+                "force_recovery=0"
+            ], to: outputPath)
+            return
+        }
+
+        let originalOverride = model.commandTranscriptModeOverrides[sessionID]
+        defer {
+            if let originalOverride {
+                model.setCommandTranscriptMode(originalOverride, for: sessionID)
+            } else {
+                model.clearCommandTranscriptModeOverride(for: sessionID)
+            }
+            model.terminalConversationDrafts[sessionID] = ""
+        }
+
+        model.setCommandTranscriptMode(.ex, for: sessionID)
+        for _ in 0..<80 {
+            if findView(accessibilityIdentifier: "terminal-conversation-mode-probe") != nil,
+               findView(accessibilityIdentifier: "terminal-conversation-composer-probe") != nil,
+               findView(accessibilityIdentifier: "terminal-conversation-send-probe") != nil,
+               findView(accessibilityIdentifier: "terminal-conversation-schedule-probe") != nil {
+                break
+            }
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+
+        let conversationProbe = findView(
+            accessibilityIdentifier: "terminal-conversation-mode-probe"
+        )
+        let composerProbe = findView(
+            accessibilityIdentifier: "terminal-conversation-composer-probe"
+        )
+        let sendProbe = findView(
+            accessibilityIdentifier: "terminal-conversation-send-probe"
+        )
+        let scheduleProbe = findView(
+            accessibilityIdentifier: "terminal-conversation-schedule-probe"
+        )
+        let conversationVisible = conversationProbe.map {
+            $0.window != nil && !$0.visibleRect.isEmpty
+        } ?? false
+
+        let runtimeCommand = "printf '__APT_CONVERSATION_BEGIN__\\n'; printf 'line-1\\nline-2\\nline-3\\nline-4\\n'; sleep 0.6; printf '__APT_CONVERSATION_END__\\n'"
+        model.terminalConversationDrafts[sessionID] = runtimeCommand
+        let initialSend = model.sendConversationCommand(sessionID: sessionID)
+
+        var sendLockPassed = false
+        for _ in 0..<80 {
+            if !model.supportsConversationComposer(sessionID: sessionID) {
+                model.terminalConversationDrafts[sessionID] = "printf '__APT_BLOCKED__\\n'"
+                try? await Task.sleep(for: .milliseconds(40))
+                sendLockPassed = !model.supportsConversationComposer(sessionID: sessionID)
+                break
+            }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+
+        var runtimeRecord: CommandExecutionRecord?
+        for _ in 0..<240 {
+            if let record = model.commandHistory.first(where: {
+                $0.sessionID == sessionID
+                    && $0.output.contains("__APT_CONVERSATION_END__")
+            }) {
+                runtimeRecord = record
+                break
+            }
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+
+        var commandRendered = false
+        var outputRendered = false
+        var outputExpansionVisible = false
+        var copyBothVisible = false
+        var copyOutputVisible = false
+        var inputRightOutputLeft = false
+        if let record = runtimeRecord {
+            let commandIdentifier = "terminal-conversation-command-\(record.id.uuidString)-probe"
+            let outputIdentifier = "terminal-conversation-output-\(record.id.uuidString)-probe"
+            let expansionIdentifier = "terminal-conversation-output-expand-\(record.id.uuidString)-probe"
+            let copyBothIdentifier = "terminal-conversation-copy-both-\(record.id.uuidString)-probe"
+            let copyOutputIdentifier = "terminal-conversation-copy-output-\(record.id.uuidString)-probe"
+
+            for _ in 0..<80 {
+                if findView(accessibilityIdentifier: commandIdentifier) != nil,
+                   findView(accessibilityIdentifier: outputIdentifier) != nil {
+                    break
+                }
+                try? await Task.sleep(for: .milliseconds(25))
+            }
+
+            let commandView = findView(accessibilityIdentifier: commandIdentifier)
+            let outputView = findView(accessibilityIdentifier: outputIdentifier)
+            commandRendered = commandView?.window != nil
+            outputRendered = outputView?.window != nil
+            outputExpansionVisible = findView(accessibilityIdentifier: expansionIdentifier)?.window != nil
+            copyBothVisible = findView(accessibilityIdentifier: copyBothIdentifier)?.window != nil
+            copyOutputVisible = findView(accessibilityIdentifier: copyOutputIdentifier)?.window != nil
+
+            if let commandView, let outputView {
+                let commandFrame = commandView.convert(commandView.bounds, to: nil)
+                let outputFrame = outputView.convert(outputView.bounds, to: nil)
+                inputRightOutputLeft = commandFrame.midX > outputFrame.midX
+            }
+        }
+
+        for _ in 0..<200 {
+            if model.supportsConversationComposer(sessionID: sessionID) { break }
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+        let readyAfterCommand = model.supportsConversationComposer(sessionID: sessionID)
+
+        model.terminalConversationDrafts[sessionID] = "printf '__APT_SCHEDULED__\\n'"
+        let scheduleControlVisible = scheduleProbe?.window != nil
+        let scheduleCreated = model.scheduleConversationCommand(
+            sessionID: sessionID,
+            command: "printf '__APT_SCHEDULED__\\n'",
+            at: Date().addingTimeInterval(0.4)
+        )
+        model.terminalConversationDrafts[sessionID] = ""
+        let scheduledID = model.scheduledCommands(sessionID: sessionID).first?.id
+
+        var scheduledStripVisible = false
+        if let scheduledID {
+            let scheduledProbeID = "scheduled-terminal-command-\(scheduledID.uuidString)-probe"
+            for _ in 0..<80 {
+                if findView(accessibilityIdentifier: scheduledProbeID)?.window != nil {
+                    scheduledStripVisible = true
+                    break
+                }
+                try? await Task.sleep(for: .milliseconds(20))
+            }
+        }
+
+        var scheduledSent = false
+        for _ in 0..<240 {
+            if model.commandHistory.contains(where: {
+                $0.sessionID == sessionID && $0.output.contains("__APT_SCHEDULED__")
+            }), model.scheduledCommands(sessionID: sessionID).isEmpty {
+                scheduledSent = true
+                break
+            }
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+        let scheduledRemaining = model.scheduledCommands(sessionID: sessionID)
+        let scheduledPendingAfterWait = scheduledRemaining.count
+        let scheduledDueAfterWait = scheduledRemaining.first.map {
+            $0.scheduledAt <= Date()
+        } ?? false
+        let scheduledReadyAfterWait = model.supportsConversationComposer(
+            sessionID: sessionID
+        )
+        let scheduledProcessRunning = TerminalPaneRuntimeStore.shared.isProcessRunning(
+            sessionID: sessionID
+        )
+        let scheduledTerminal = TerminalPaneRuntimeStore.shared.container(
+            for: sessionID
+        )?.terminal
+        let scheduledBufferData = scheduledTerminal?.terminal.getBufferAsData(
+            kind: .active
+        ) ?? Data()
+        let scheduledBufferText = String(decoding: scheduledBufferData, as: UTF8.self)
+        let scheduledLastLine = scheduledBufferText
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .reversed()
+            .map(String.init)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first(where: { !$0.isEmpty }) ?? ""
+
+        for _ in 0..<160 {
+            if model.supportsConversationComposer(sessionID: sessionID) { break }
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+        model.terminalConversationDrafts[sessionID] = "stty -isig; sleep 30"
+        let forceCommandStarted = model.sendConversationCommand(sessionID: sessionID)
+        for _ in 0..<80 {
+            if !model.supportsConversationComposer(sessionID: sessionID) { break }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        model.forceInterruptAndRecover(sessionID: sessionID)
+
+        var forceReady = false
+        for _ in 0..<280 {
+            if model.supportsConversationComposer(sessionID: sessionID) {
+                forceReady = true
+                break
+            }
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+
+        var forceRecoveryPassed = false
+        if forceReady {
+            model.terminalConversationDrafts[sessionID] = "printf '__APT_FORCE_RECOVERED__\\n'"
+            let recoverySent = model.sendConversationCommand(sessionID: sessionID)
+            for _ in 0..<200 {
+                if recoverySent && model.commandHistory.contains(where: {
+                    $0.sessionID == sessionID && $0.output.contains("__APT_FORCE_RECOVERED__")
+                }) {
+                    forceRecoveryPassed = true
+                    break
+                }
+                try? await Task.sleep(for: .milliseconds(25))
+            }
+        }
+
+        var narrowLayoutPassed = false
+        if let window = mainWindow ?? NSApp.mainWindow {
+            let originalFrame = window.frame
+            window.setContentSize(NSSize(width: 760, height: 520))
+            try? await Task.sleep(for: .milliseconds(180))
+            if let conversationProbe = findView(
+                accessibilityIdentifier: "terminal-conversation-mode-probe"
+            ), let composerProbe = findView(
+                accessibilityIdentifier: "terminal-conversation-composer-probe"
+            ) {
+                narrowLayoutPassed = conversationProbe.window != nil
+                    && composerProbe.window != nil
+                    && conversationProbe.bounds.width > 300
+                    && composerProbe.bounds.width > 120
+            }
+            window.setFrame(originalFrame, display: true)
+        }
+
+        writeProbeResult([
+            "session_ready=1",
+            "conversation_visible=\(conversationVisible ? 1 : 0)",
+            "composer_visible=\(composerProbe?.window != nil ? 1 : 0)",
+            "send_control_visible=\(sendProbe?.window != nil ? 1 : 0)",
+            "schedule_control_visible=\(scheduleControlVisible ? 1 : 0)",
+            "initial_send=\(initialSend ? 1 : 0)",
+            "send_lock=\(sendLockPassed ? 1 : 0)",
+            "ready_after_command=\(readyAfterCommand ? 1 : 0)",
+            "command_rendered=\(commandRendered ? 1 : 0)",
+            "output_rendered=\(outputRendered ? 1 : 0)",
+            "input_right_output_left=\(inputRightOutputLeft ? 1 : 0)",
+            "output_expansion_visible=\(outputExpansionVisible ? 1 : 0)",
+            "copy_both_visible=\(copyBothVisible ? 1 : 0)",
+            "copy_output_visible=\(copyOutputVisible ? 1 : 0)",
+            "schedule_created=\(scheduleCreated ? 1 : 0)",
+            "scheduled_strip_visible=\(scheduledStripVisible ? 1 : 0)",
+            "scheduled_send=\(scheduledSent ? 1 : 0)",
+            "scheduled_pending_after_wait=\(scheduledPendingAfterWait)",
+            "scheduled_due_after_wait=\(scheduledDueAfterWait ? 1 : 0)",
+            "scheduled_ready_after_wait=\(scheduledReadyAfterWait ? 1 : 0)",
+            "scheduled_process_running=\(scheduledProcessRunning ? 1 : 0)",
+            "scheduled_current_command_base64=\(Data((scheduledTerminal?.currentCommandText ?? "").utf8).base64EncodedString())",
+            "scheduled_last_line_base64=\(Data(scheduledLastLine.utf8).base64EncodedString())",
+            "force_command_started=\(forceCommandStarted ? 1 : 0)",
+            "force_ready=\(forceReady ? 1 : 0)",
+            "force_recovery=\(forceRecoveryPassed ? 1 : 0)",
+            "narrow_layout=\(narrowLayoutPassed ? 1 : 0)"
+        ], to: outputPath)
     }
 
     private func writeProbeResult(_ lines: [String], to path: String) {

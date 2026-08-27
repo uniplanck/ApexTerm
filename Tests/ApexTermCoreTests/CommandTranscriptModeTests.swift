@@ -14,9 +14,9 @@ final class CommandTranscriptModeTests: XCTestCase {
         XCTAssertEqual(CommandTranscriptMode.off.title, "Off")
     }
 
-    func testExShowsOnlyLatestRecord() {
+    func testExUsesConversationHistoryWindow() {
         XCTAssertTrue(CommandTranscriptMode.ex.showsTranscript)
-        XCTAssertEqual(CommandTranscriptMode.ex.recordLimit, 1)
+        XCTAssertEqual(CommandTranscriptMode.ex.recordLimit, 100)
         XCTAssertEqual(CommandTranscriptMode.ex.title, "Ex")
     }
 

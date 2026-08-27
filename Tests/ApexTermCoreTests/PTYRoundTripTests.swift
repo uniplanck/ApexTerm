@@ -247,6 +247,62 @@ final class PTYRoundTripTests: XCTestCase {
     }
 
     @MainActor
+    func testForceInterruptRecoversForegroundJobAndRestoresTTYISIG() async throws {
+        let terminal = ApexLocalProcessTerminalView(
+            frame: CGRect(x: 0, y: 0, width: 640, height: 480)
+        )
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["-df"],
+            environment: Terminal.getEnvironmentVariables(termName: "xterm-256color")
+        )
+        defer {
+            if terminal.process.running {
+                terminal.terminateSession(scope: .processGroup)
+            }
+        }
+        try await Task.sleep(for: .milliseconds(100))
+
+        terminal.send(
+            source: terminal,
+            data: Array("stty -isig; sleep 30\n".utf8)[...]
+        )
+        let firstStarted = await waitUntilAsync(timeout: 2) {
+            LocalTerminalProcessSession(rootPID: terminal.process.shellPid)?
+                .foregroundJobProcessGroup() != nil
+        }
+        XCTAssertTrue(firstStarted)
+
+        let result = terminal.forceInterruptAndRecover()
+        if case .signalledForegroundProcessGroup = result {
+            // expected
+        } else {
+            XCTFail("force recovery did not signal the foreground group: \(result)")
+        }
+        let firstReleased = await waitUntilAsync(timeout: 3) {
+            LocalTerminalProcessSession(rootPID: terminal.process.shellPid)?
+                .foregroundJobProcessGroup() == nil
+        }
+        XCTAssertTrue(firstReleased)
+        try await Task.sleep(for: .milliseconds(700))
+
+        terminal.send(source: terminal, data: Array("sleep 30\n".utf8)[...])
+        let secondStarted = await waitUntilAsync(timeout: 2) {
+            LocalTerminalProcessSession(rootPID: terminal.process.shellPid)?
+                .foregroundJobProcessGroup() != nil
+        }
+        XCTAssertTrue(secondStarted)
+
+        terminal.keyDown(with: try controlKeyEvent(character: "c", keyCode: 8))
+        let secondReleased = await waitUntilAsync(timeout: 3) {
+            LocalTerminalProcessSession(rootPID: terminal.process.shellPid)?
+                .foregroundJobProcessGroup() == nil
+        }
+        XCTAssertTrue(secondReleased, "force recovery must restore ISIG via stty sane")
+        XCTAssertTrue(terminal.process.running)
+    }
+
+    @MainActor
     func testRepeatedControlCRecoversStuckAlternateScreenForegroundJob() async throws {
         let terminal = ApexLocalProcessTerminalView(
             frame: CGRect(x: 0, y: 0, width: 640, height: 480)
