@@ -179,6 +179,16 @@ struct ApexTermApp: App {
                     model.keybindingChord(for: "terminal.latestOutput.copy")
                 )
 
+                Button("Send in C Mode") {
+                    model.performAction(id: "terminal.conversation.send")
+                }
+                .apexKeyboardShortcut(
+                    model.keybindingChord(
+                        for: "terminal.conversation.send",
+                        scope: .terminal
+                    )
+                )
+
                 Button("Cycle Transcript Mode") {
                     model.performAction(id: "terminal.transcript.cycle")
                 }

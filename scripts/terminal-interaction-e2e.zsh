@@ -89,6 +89,7 @@ for expected in \
   'transcript_mode_button_hittable=1' \
   'mode_button_cycles_off=1' \
   'mode_button_cycles_ex=1' \
+  'mode_button_cycles_c=1' \
   'mode_button_cycles_on=1'
 do
   grep -Fqx "$expected" "$BLOCK_PROBE"

@@ -1598,15 +1598,46 @@ struct RootView: View {
             model.toggleCommandCollapsed(record.id)
         }
 
+        let quickCopyView = findView(
+            accessibilityIdentifier: "command-output-copy-\(record.id.uuidString)"
+        )
+        let quickCopyIsControlHit: Bool = {
+            guard let quickCopyView else { return false }
+            let center = NSPoint(
+                x: quickCopyView.bounds.midX,
+                y: quickCopyView.bounds.midY
+            )
+            let pointInBlock = quickCopyView.convert(center, to: commandBlock)
+            var current = commandBlock.hitTest(pointInBlock)
+            while let view = current, view !== commandBlock {
+                if view is NSControl || view.accessibilityRole() == .button {
+                    return true
+                }
+                if view.accessibilityIdentifier().contains("command-output-copy") {
+                    return true
+                }
+                current = view.superview
+            }
+            return false
+        }()
+        let copyCollapsedStateBefore = model.isCommandCollapsed(record.id)
+        pasteboard.clearContents()
+        let quickCopyPressed = quickCopyView?.accessibilityPerformPress() ?? false
+        try? await Task.sleep(for: .milliseconds(60))
+        let quickCopyNoToggle = quickCopyPressed
+            && model.isCommandCollapsed(record.id) == copyCollapsedStateBefore
+            && pasteboard.string(forType: .string) == record.output
+
         let center = NSPoint(x: button.bounds.midX, y: button.bounds.midY)
         let localHit = button.hitTest(center)
         let hittable = localHit === button || localHit?.isDescendant(of: button) == true
         let visible = !button.visibleRect.isEmpty && !button.isHiddenOrHasHiddenAncestor
 
         let originalTranscriptMode = model.commandTranscriptMode
+        let originalSessionOverride = model.commandTranscriptModeOverrides[record.sessionID]
         let originalCollapsedState = model.isCommandCollapsed(record.id)
         let commandBlockIdentifier = "terminal-command-block-\(record.id.uuidString)"
-        model.commandTranscriptMode = .on
+        model.setCommandTranscriptMode(.on, for: record.sessionID)
         try? await Task.sleep(for: .milliseconds(120))
 
         let transcriptModeButton = findView(
@@ -1627,14 +1658,14 @@ struct RootView: View {
 
         transcriptModeButton?.performClick(nil)
         try? await Task.sleep(for: .milliseconds(120))
-        let modeButtonCyclesOff = model.commandTranscriptMode == .off
+        let modeButtonCyclesOff = model.commandTranscriptMode(for: record.sessionID) == .off
             && findView(accessibilityIdentifier: commandBlockIdentifier) == nil
 
         transcriptModeButton?.performClick(nil)
         var modeButtonCyclesEx = false
         for _ in 0..<20 {
             try? await Task.sleep(for: .milliseconds(25))
-            if model.commandTranscriptMode == .ex,
+            if model.commandTranscriptMode(for: record.sessionID) == .ex,
                findView(accessibilityIdentifier: commandBlockIdentifier) != nil,
                model.isCommandCollapsed(record.id) {
                 modeButtonCyclesEx = true
@@ -1643,16 +1674,32 @@ struct RootView: View {
         }
 
         transcriptModeButton?.performClick(nil)
+        var modeButtonCyclesConversation = false
+        for _ in 0..<20 {
+            try? await Task.sleep(for: .milliseconds(25))
+            if model.commandTranscriptMode(for: record.sessionID) == .conversation,
+               findView(accessibilityIdentifier: "terminal-conversation-mode-probe") != nil {
+                modeButtonCyclesConversation = true
+                break
+            }
+        }
+
+        transcriptModeButton?.performClick(nil)
         var modeButtonCyclesOn = false
         for _ in 0..<20 {
             try? await Task.sleep(for: .milliseconds(25))
-            if model.commandTranscriptMode == .on,
+            if model.commandTranscriptMode(for: record.sessionID) == .on,
                findView(accessibilityIdentifier: commandBlockIdentifier) != nil {
                 modeButtonCyclesOn = true
                 break
             }
         }
         model.commandTranscriptMode = originalTranscriptMode
+        if let originalSessionOverride {
+            model.setCommandTranscriptMode(originalSessionOverride, for: record.sessionID)
+        } else {
+            model.clearCommandTranscriptModeOverride(for: record.sessionID)
+        }
         if model.isCommandCollapsed(record.id) != originalCollapsedState {
             model.toggleCommandCollapsed(record.id)
         }
@@ -1665,12 +1712,15 @@ struct RootView: View {
                 "button_visible=\(visible ? 1 : 0)",
                 "menu_items=\(menuItemsPassed ? 1 : 0)",
                 "output_copy_action=\(outputCopied ? 1 : 0)",
+                "quick_copy_control_hit=\(quickCopyIsControlHit ? 1 : 0)",
+                "quick_copy_no_toggle=\(quickCopyNoToggle ? 1 : 0)",
                 "toggle_action=\(togglePassed ? 1 : 0)",
                 "transcript_mode_button_found=\(transcriptModeButton != nil ? 1 : 0)",
                 "transcript_mode_button_enabled=\(transcriptModeButton?.isEnabled == true ? 1 : 0)",
                 "transcript_mode_button_hittable=\((modeButtonHittable && modeButtonVisible) ? 1 : 0)",
                 "mode_button_cycles_off=\(modeButtonCyclesOff ? 1 : 0)",
                 "mode_button_cycles_ex=\(modeButtonCyclesEx ? 1 : 0)",
+                "mode_button_cycles_c=\(modeButtonCyclesConversation ? 1 : 0)",
                 "mode_button_cycles_on=\(modeButtonCyclesOn ? 1 : 0)"
             ],
             to: outputPath
@@ -1816,16 +1866,19 @@ struct RootView: View {
         }
 
         let originalOverride = model.commandTranscriptModeOverrides[sessionID]
+        let originalCollapsedLineLimit = model.conversationCollapsedLineLimit
         defer {
             if let originalOverride {
                 model.setCommandTranscriptMode(originalOverride, for: sessionID)
             } else {
                 model.clearCommandTranscriptModeOverride(for: sessionID)
             }
+            model.conversationCollapsedLineLimit = originalCollapsedLineLimit
             model.terminalConversationDrafts[sessionID] = ""
         }
 
-        model.setCommandTranscriptMode(.ex, for: sessionID)
+        model.conversationCollapsedLineLimit = 1
+        model.setCommandTranscriptMode(.conversation, for: sessionID)
         for _ in 0..<80 {
             if findView(accessibilityIdentifier: "terminal-conversation-mode-probe") != nil,
                findView(accessibilityIdentifier: "terminal-conversation-composer-probe") != nil,
@@ -1848,13 +1901,63 @@ struct RootView: View {
         let scheduleProbe = findView(
             accessibilityIdentifier: "terminal-conversation-schedule-probe"
         )
+        let statusProbe = findView(
+            accessibilityIdentifier: "terminal-conversation-status-probe"
+        )
+        let scrollProbe = findView(
+            accessibilityIdentifier: "terminal-conversation-scroll-probe"
+        )
+        let nativeComposer = findView(
+            accessibilityIdentifier: "terminal-conversation-composer-native"
+        ) as? NSScrollView
         let conversationVisible = conversationProbe.map {
             $0.window != nil && !$0.visibleRect.isEmpty
         } ?? false
+        let statusComposerNonOverlap: Bool = {
+            guard let statusProbe, let composerProbe else { return false }
+            let statusFrame = statusProbe.convert(statusProbe.bounds, to: nil)
+            let composerFrame = composerProbe.convert(composerProbe.bounds, to: nil)
+            return !statusFrame.intersects(composerFrame)
+        }()
+        let scrollInfrastructurePresent: Bool = {
+            var current = scrollProbe?.superview
+            while let view = current {
+                if let scrollView = view as? NSScrollView {
+                    return scrollView.hasVerticalScroller
+                }
+                current = view.superview
+            }
+            return false
+        }()
+        let sendShortcutConfigured = model.keybindingChord(
+            for: "terminal.conversation.send",
+            scope: .terminal
+        )?.displayName == "⌘↩"
 
         let runtimeCommand = "printf '__APT_CONVERSATION_BEGIN__\\n'; printf 'line-1\\nline-2\\nline-3\\nline-4\\n'; sleep 0.6; printf '__APT_CONVERSATION_END__\\n'"
         model.terminalConversationDrafts[sessionID] = runtimeCommand
-        let initialSend = model.sendConversationCommand(sessionID: sessionID)
+        try? await Task.sleep(for: .milliseconds(80))
+        let shortcutEvent = NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [.command],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: (mainWindow ?? NSApp.mainWindow)?.windowNumber ?? 0,
+            context: nil,
+            characters: "\r",
+            charactersIgnoringModifiers: "\r",
+            isARepeat: false,
+            keyCode: 36
+        )
+        if let composerTextView = nativeComposer?.documentView as? NSTextView {
+            nativeComposer?.window?.makeFirstResponder(composerTextView)
+        }
+        if let shortcutEvent {
+            NSApp.sendEvent(shortcutEvent)
+        }
+        try? await Task.sleep(for: .milliseconds(120))
+        let initialSend = model.terminalConversationDrafts[sessionID]?.isEmpty == true
+            && !model.supportsConversationComposer(sessionID: sessionID)
 
         var sendLockPassed = false
         for _ in 0..<80 {
@@ -2047,6 +2150,10 @@ struct RootView: View {
             "output_expansion_visible=\(outputExpansionVisible ? 1 : 0)",
             "copy_both_visible=\(copyBothVisible ? 1 : 0)",
             "copy_output_visible=\(copyOutputVisible ? 1 : 0)",
+            "status_composer_nonoverlap=\(statusComposerNonOverlap ? 1 : 0)",
+            "scroll_infrastructure=\(scrollInfrastructurePresent ? 1 : 0)",
+            "send_shortcut_configured=\(sendShortcutConfigured ? 1 : 0)",
+            "collapsed_line_limit=\(model.conversationCollapsedLineLimit)",
             "schedule_created=\(scheduleCreated ? 1 : 0)",
             "scheduled_strip_visible=\(scheduledStripVisible ? 1 : 0)",
             "scheduled_send=\(scheduledSent ? 1 : 0)",
@@ -2143,7 +2250,10 @@ struct RootView: View {
             "pane.select.4": "⌃⌥4"
         ].allSatisfy { actionID, displayName in
             model.keybindingChord(for: actionID)?.displayName == displayName
-        }
+        } && model.keybindingChord(
+            for: "terminal.conversation.send",
+            scope: .terminal
+        )?.displayName == "⌘↩"
 
         model.selectMainTab(initialTabs[0])
         let nextHandled = performShortcut(
@@ -2263,6 +2373,12 @@ struct RootView: View {
             keyCode: 17,
             modifiers: [.command, .option]
         )
+        let transcriptConversation = model.commandTranscriptMode == .conversation
+        let transcriptFourthHandled = performShortcut(
+            characters: "t",
+            keyCode: 17,
+            modifiers: [.command, .option]
+        )
         let transcriptOn = model.commandTranscriptMode == .on
 
         model.isCommandHistoryVisible = false
@@ -2321,8 +2437,8 @@ struct RootView: View {
                 "copy_notice_state=\(copyNoticeState ? 1 : 0)",
                 "copy_notice_visible=\(copyNoticeVisible ? 1 : 0)",
                 "copy_notice_dismissed=\(copyNoticeDismissed ? 1 : 0)",
-                "transcript_shortcuts_handled=\((transcriptFirstHandled && transcriptSecondHandled && transcriptThirdHandled) ? 1 : 0)",
-                "transcript_cycle=\((transcriptOff && transcriptEx && transcriptOn) ? 1 : 0)",
+                "transcript_shortcuts_handled=\((transcriptFirstHandled && transcriptSecondHandled && transcriptThirdHandled && transcriptFourthHandled) ? 1 : 0)",
+                "transcript_cycle=\((transcriptOff && transcriptEx && transcriptConversation && transcriptOn) ? 1 : 0)",
                 "history_shortcut_handled=\(historyHandled ? 1 : 0)",
                 "history_toggled=\(historyToggled ? 1 : 0)",
                 "left_sidebar_shortcut_handled=\(leftSidebarHandled ? 1 : 0)",

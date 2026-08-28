@@ -14,16 +14,23 @@ final class CommandTranscriptModeTests: XCTestCase {
         XCTAssertEqual(CommandTranscriptMode.off.title, "Off")
     }
 
-    func testExUsesConversationHistoryWindow() {
+    func testExKeepsLegacySingleRecordTranscript() {
         XCTAssertTrue(CommandTranscriptMode.ex.showsTranscript)
-        XCTAssertEqual(CommandTranscriptMode.ex.recordLimit, 100)
+        XCTAssertEqual(CommandTranscriptMode.ex.recordLimit, 1)
         XCTAssertEqual(CommandTranscriptMode.ex.title, "Ex")
     }
 
-    func testCycleOrderIsOnOffExOn() {
+    func testConversationModeIsSeparateFromTranscript() {
+        XCTAssertFalse(CommandTranscriptMode.conversation.showsTranscript)
+        XCTAssertEqual(CommandTranscriptMode.conversation.recordLimit, 100)
+        XCTAssertEqual(CommandTranscriptMode.conversation.title, "C")
+    }
+
+    func testCycleOrderIsOnOffExConversationOn() {
         XCTAssertEqual(CommandTranscriptMode.on.next, .off)
         XCTAssertEqual(CommandTranscriptMode.off.next, .ex)
-        XCTAssertEqual(CommandTranscriptMode.ex.next, .on)
+        XCTAssertEqual(CommandTranscriptMode.ex.next, .conversation)
+        XCTAssertEqual(CommandTranscriptMode.conversation.next, .on)
     }
 
     func testProfileDecodesLegacyDocumentWithoutTranscriptMode() throws {

@@ -288,17 +288,12 @@ private struct TerminalCommandBlockCard: View {
                         )
                         .frame(width: 22, height: 22)
 
-                        Button(action: copyOutput) {
-                            Image(systemName: "doc.on.clipboard")
-                                .font(.system(size: 9, weight: .semibold))
-                                .frame(width: 20, height: 18)
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(record.output.isEmpty)
-                        .foregroundStyle(record.output.isEmpty ? Color.secondary.opacity(0.35) : Color.accentColor)
-                        .help(record.output.isEmpty ? "出力はまだありません" : "出力だけをコピー")
-                        .accessibilityLabel("出力だけをコピー")
-                        .accessibilityIdentifier("command-output-copy-\(record.id.uuidString)")
+                        CommandOutputCopyButton(
+                            accessibilityIdentifier: "command-output-copy-\(record.id.uuidString)",
+                            isEnabled: !record.output.isEmpty,
+                            action: copyOutput
+                        )
+                        .frame(width: 20, height: 18)
                     }
 
                     VStack(alignment: .leading, spacing: 5) {
@@ -621,6 +616,60 @@ private struct CommandHistoryCard: View {
     }
 }
 
+private struct CommandOutputCopyButton: NSViewRepresentable {
+    let accessibilityIdentifier: String
+    let isEnabled: Bool
+    let action: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(action: action)
+    }
+
+    func makeNSView(context: Context) -> NSButton {
+        let button = NSButton(
+            image: NSImage(
+                systemSymbolName: "doc.on.clipboard",
+                accessibilityDescription: "出力だけをコピー"
+            ) ?? NSImage(),
+            target: context.coordinator,
+            action: #selector(Coordinator.performCopy(_:))
+        )
+        button.identifier = NSUserInterfaceItemIdentifier(accessibilityIdentifier)
+        button.setAccessibilityIdentifier(accessibilityIdentifier)
+        button.setAccessibilityLabel("出力だけをコピー")
+        button.isBordered = false
+        button.imagePosition = .imageOnly
+        button.imageScaling = .scaleProportionallyDown
+        button.focusRingType = .none
+        button.toolTip = isEnabled ? "出力だけをコピー" : "出力はまだありません"
+        button.isEnabled = isEnabled
+        return button
+    }
+
+    func updateNSView(_ button: NSButton, context: Context) {
+        context.coordinator.action = action
+        button.identifier = NSUserInterfaceItemIdentifier(accessibilityIdentifier)
+        button.setAccessibilityIdentifier(accessibilityIdentifier)
+        button.setAccessibilityLabel("出力だけをコピー")
+        button.toolTip = isEnabled ? "出力だけをコピー" : "出力はまだありません"
+        button.isEnabled = isEnabled
+        button.contentTintColor = isEnabled ? .controlAccentColor : .disabledControlTextColor
+    }
+
+    @MainActor
+    final class Coordinator: NSObject {
+        var action: () -> Void
+
+        init(action: @escaping () -> Void) {
+            self.action = action
+        }
+
+        @objc func performCopy(_ sender: NSButton) {
+            action()
+        }
+    }
+}
+
 private struct RightClickableHostingContainer<Content: View>: NSViewRepresentable {
     let accessibilityIdentifier: String
     let onLeftClick: () -> Void
@@ -679,6 +728,15 @@ private final class RightClickableHostingView<Content: View>: NSHostingView<Cont
         fatalError("init(coder:) has not been implemented")
     }
 
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard bounds.contains(point) else { return nil }
+        guard let hit = super.hitTest(point) else { return self }
+        if hit === self || !hasControlAncestor(hit) {
+            return self
+        }
+        return hit
+    }
+
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         mouseDownPoint = point
@@ -695,7 +753,9 @@ private final class RightClickableHostingView<Content: View>: NSHostingView<Cont
     override func mouseUp(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         let start = mouseDownPoint
+        let mouseUpEndedInControl = hasControlAncestor(hitTest(point))
         let shouldToggle = !mouseDownStartedInControl
+            && !mouseUpEndedInControl
             && !mouseDraggedSinceDown
             && start.map { hypot(point.x - $0.x, point.y - $0.y) <= 4 } == true
         super.mouseUp(with: event)
@@ -717,7 +777,12 @@ private final class RightClickableHostingView<Content: View>: NSHostingView<Cont
     private func hasControlAncestor(_ hitView: NSView?) -> Bool {
         var current = hitView
         while let view = current, view !== self {
-            if view is NSControl { return true }
+            if view is NSControl || view.accessibilityRole() == .button {
+                return true
+            }
+            if view.accessibilityIdentifier().contains("command-output-copy") {
+                return true
+            }
             current = view.superview
         }
         return false

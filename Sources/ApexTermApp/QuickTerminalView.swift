@@ -470,8 +470,9 @@ private struct QuickTerminalGroupView: View {
                 },
                 onPromptReadinessChange: { _ in },
                 onCommandCaptured: { record in
-                    guard autoCopyCommandOutputEnabled else { return }
+                    guard autoCopyCommandOutputEnabled, !record.output.isEmpty else { return }
                     ClipboardWriter.copy(record.output)
+                    AutoCopyToastPresenter.shared.showOutputCopied()
                 },
                 onActivate: {}
             )

@@ -74,6 +74,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var shellPromptReadySessionIDs: Set<UUID> = []
     @Published private(set) var remoteInteractiveSessionIDs: Set<UUID> = []
     @Published private(set) var activeCommandBySession: [UUID: String] = [:]
+    @Published private(set) var conversationSendPendingSessionIDs: Set<UUID> = []
     @Published private(set) var commandTranscriptModeOverrides: [UUID: CommandTranscriptMode] = [:]
     @Published var terminalConversationDrafts: [UUID: String] = [:]
     @Published private(set) var scheduledTerminalCommands: [ScheduledTerminalCommand] = []
@@ -211,6 +212,19 @@ final class AppModel: ObservableObject {
             UserDefaults.standard.set(
                 commandBlocksStartCollapsed,
                 forKey: "apexterm.terminal.commandBlocksStartCollapsed"
+            )
+        }
+    }
+    @Published var conversationCollapsedLineLimit: Int = {
+        let stored = UserDefaults.standard.integer(
+            forKey: "apexterm.terminal.conversationCollapsedLineLimit"
+        )
+        return min(max(stored == 0 ? 3 : stored, 1), 8)
+    }() {
+        didSet {
+            UserDefaults.standard.set(
+                min(max(conversationCollapsedLineLimit, 1), 8),
+                forKey: "apexterm.terminal.conversationCollapsedLineLimit"
             )
         }
     }
@@ -2499,13 +2513,16 @@ final class AppModel: ObservableObject {
         var readySessions = shellPromptReadySessionIDs
         var remoteSessions = remoteInteractiveSessionIDs
         var activeCommands = activeCommandBySession
+        var pendingConversationSends = conversationSendPendingSessionIDs
 
         for event in events {
             switch event {
             case .promptStarted, .commandInputStarted:
                 readySessions.insert(sessionID)
+                pendingConversationSends.remove(sessionID)
             case let .commandCaptured(command):
                 readySessions.remove(sessionID)
+                pendingConversationSends.remove(sessionID)
                 activeCommands[sessionID] = command
                 if TerminalConversationPolicy.commandStartsRemoteInteractiveSession(command) {
                     remoteSessions.insert(sessionID)
@@ -2514,6 +2531,7 @@ final class AppModel: ObservableObject {
                 readySessions.remove(sessionID)
             case .commandFinished:
                 readySessions.remove(sessionID)
+                pendingConversationSends.remove(sessionID)
                 remoteSessions.remove(sessionID)
                 activeCommands.removeValue(forKey: sessionID)
             }
@@ -2527,6 +2545,9 @@ final class AppModel: ObservableObject {
         }
         if activeCommands != activeCommandBySession {
             activeCommandBySession = activeCommands
+        }
+        if pendingConversationSends != conversationSendPendingSessionIDs {
+            conversationSendPendingSessionIDs = pendingConversationSends
         }
 
         Task { [commandBoundaryIndex] in
@@ -2574,17 +2595,55 @@ final class AppModel: ObservableObject {
     }
 
     func isShellPromptReady(sessionID: UUID) -> Bool {
-        shellPromptReadySessionIDs.contains(sessionID)
-            || TerminalPaneRuntimeStore.shared.isPromptReady(sessionID: sessionID)
+        if shellPromptReadySessionIDs.contains(sessionID)
+            || TerminalPaneRuntimeStore.shared.isPromptReady(sessionID: sessionID) {
+            return true
+        }
+
+        // OSC 133 is the authoritative local-shell boundary. The rendered-buffer
+        // heuristic is deliberately secondary: a themed prompt, a command-not-found
+        // message, or the first frame after leaving ssh can fail the heuristic even
+        // though zsh has already reported that it is idle. Never let that late false
+        // frame permanently relock C mode.
+        guard let session = session(id: sessionID),
+              !session.kind.isRemote,
+              !remoteInteractiveSessionIDs.contains(sessionID),
+              activeCommandBySession[sessionID] == nil,
+              !conversationSendPendingSessionIDs.contains(sessionID),
+              let status = commandStatusBySession[sessionID] else {
+            return false
+        }
+        // `.commandInputStarted` means the shell has entered its editable input
+        // region. The UI label is "Typing", but for C-mode send gating this is
+        // already a real prompt boundary, even before any key is typed.
+        return status == "Ready"
+            || status == "Typing"
+            || status == "Done"
+            || status.hasPrefix("Exit ")
     }
 
     func supportsConversationComposer(sessionID: UUID) -> Bool {
-        guard let session = session(id: sessionID) else { return false }
-        return TerminalConversationPolicy.supportsComposer(
-            sessionKind: session.kind,
-            shellPromptReady: isShellPromptReady(sessionID: sessionID),
-            remoteInteractiveCommandActive: remoteInteractiveSessionIDs.contains(sessionID)
-        )
+        guard let session = session(id: sessionID),
+              session.state == .attached,
+              TerminalPaneRuntimeStore.shared.isProcessRunning(sessionID: sessionID),
+              activeCommandBySession[sessionID] == nil else {
+            return false
+        }
+        return isShellPromptReady(sessionID: sessionID)
+    }
+
+    func conversationComposerStatus(sessionID: UUID) -> String {
+        guard TerminalPaneRuntimeStore.shared.isProcessRunning(sessionID: sessionID) else {
+            return "端末未接続"
+        }
+        if activeCommandBySession[sessionID] != nil
+            || (conversationSendPendingSessionIDs.contains(sessionID)
+                && !isShellPromptReady(sessionID: sessionID)) {
+            return "実行中"
+        }
+        return supportsConversationComposer(sessionID: sessionID)
+            ? "送信可能"
+            : "プロンプト同期中"
     }
 
     func updatePromptReadiness(_ ready: Bool, sessionID: UUID) {
@@ -2592,6 +2651,7 @@ final class AppModel: ObservableObject {
         var readySessions = shellPromptReadySessionIDs
         if ready {
             readySessions.insert(sessionID)
+            conversationSendPendingSessionIDs.remove(sessionID)
             if commandStatusBySession[sessionID] == "強制停止中" {
                 commandStatusBySession[sessionID] = "Ready"
             }
@@ -2612,12 +2672,14 @@ final class AppModel: ObservableObject {
             showTransientNotice("プロンプトへ戻るまで送信できません")
             return false
         }
+        conversationSendPendingSessionIDs.insert(sessionID)
         let accepted = TerminalPaneRuntimeStore.shared.sendProgrammaticInput(
             sessionID: sessionID,
             text: command,
             execute: true
         )
         guard accepted else {
+            conversationSendPendingSessionIDs.remove(sessionID)
             showTransientNotice("端末入力を送信できませんでした")
             return false
         }
@@ -2828,6 +2890,12 @@ final class AppModel: ObservableObject {
     }
 
     func recordCommandExecution(_ record: CommandExecutionRecord) {
+        conversationSendPendingSessionIDs.remove(record.sessionID)
+        activeCommandBySession.removeValue(forKey: record.sessionID)
+        remoteInteractiveSessionIDs.remove(record.sessionID)
+        commandStatusBySession[record.sessionID] = record.exitCode == 0
+            ? "Done"
+            : "Exit \(record.exitCode)"
         completeDirectAutomationIfNeeded(with: record)
         let isDuplicate = commandHistory.prefix(5).contains { existing in
             existing.sessionID == record.sessionID
@@ -2838,8 +2906,9 @@ final class AppModel: ObservableObject {
         }
         guard !isDuplicate else { return }
         commandHistory = commandHistoryRecorder.appendDeferred(record)
-        if autoCopyCommandOutputEnabled {
+        if autoCopyCommandOutputEnabled, !record.output.isEmpty {
             ClipboardWriter.copy(record.output)
+            AutoCopyToastPresenter.shared.showOutputCopied()
         }
         if commandTranscriptMode(for: record.sessionID) == .ex || commandBlocksStartCollapsed {
             collapsedCommandIDs.insert(record.id)
@@ -3305,6 +3374,10 @@ final class AppModel: ObservableObject {
             }
         case "terminal.latestOutput.copy":
             copyLatestOutputFromActiveTab()
+        case "terminal.conversation.send":
+            if let selectedSessionID {
+                _ = sendConversationCommand(sessionID: selectedSessionID)
+            }
         case "terminal.transcript.cycle":
             cycleCommandTranscriptMode()
         case "agent.new.local":
@@ -3713,6 +3786,7 @@ final class AppModel: ObservableObject {
         let liveSessionIDs = Set(sessions.map(\.id))
         shellPromptReadySessionIDs.formIntersection(liveSessionIDs)
         remoteInteractiveSessionIDs.formIntersection(liveSessionIDs)
+        conversationSendPendingSessionIDs.formIntersection(liveSessionIDs)
         activeCommandBySession = activeCommandBySession.filter {
             liveSessionIDs.contains($0.key)
         }

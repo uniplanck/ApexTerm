@@ -88,6 +88,7 @@ public enum CommandTranscriptMode: String, Codable, CaseIterable, Identifiable, 
     case on
     case off
     case ex
+    case conversation
 
     public var id: String { rawValue }
 
@@ -96,6 +97,7 @@ public enum CommandTranscriptMode: String, Codable, CaseIterable, Identifiable, 
         case .on: "On"
         case .off: "Off"
         case .ex: "Ex"
+        case .conversation: "C"
         }
     }
 
@@ -104,17 +106,25 @@ public enum CommandTranscriptMode: String, Codable, CaseIterable, Identifiable, 
         case .on: "rectangle.split.1x2"
         case .off: "rectangle.bottomhalf.filled"
         case .ex: "rectangle.topthird.inset.filled"
+        case .conversation: "bubble.left.and.bubble.right"
         }
     }
 
-    public var showsTranscript: Bool { self != .off }
-    public var recordLimit: Int { 100 }
+    public var showsTranscript: Bool { self != .off && self != .conversation }
+
+    public var recordLimit: Int {
+        switch self {
+        case .ex: 1
+        case .on, .off, .conversation: 100
+        }
+    }
 
     public var next: Self {
         switch self {
         case .on: .off
         case .off: .ex
-        case .ex: .on
+        case .ex: .conversation
+        case .conversation: .on
         }
     }
 }
@@ -380,6 +390,12 @@ public struct ApexSettingsDocument: Codable, Equatable, Sendable {
         binding("tab.select.8", "8", [.command]),
         binding("tab.select.9", "9", [.command]),
         binding("terminal.latestOutput.copy", "c", [.command, .option]),
+        ApexKeybinding(
+            id: stableBindingID(actionID: "terminal.conversation.send"),
+            actionID: "terminal.conversation.send",
+            chord: ApexKeyChord(key: "return", modifiers: [.command]),
+            scope: .terminal
+        ),
         binding("terminal.transcript.cycle", "t", [.command, .option]),
         binding("history.toggle", "h", [.command, .control]),
         binding("sidebar.toggleLeft", "[", [.command, .option]),

@@ -20,6 +20,15 @@ final class TerminalConversationPolicyTests: XCTestCase {
             ),
             .on
         )
+        XCTAssertEqual(
+            TerminalConversationPolicy.resolvesTranscriptMode(
+                baseMode: .off,
+                sessionKind: .ssh(host: "gae"),
+                remoteInteractiveCommandActive: false,
+                userOverride: .conversation
+            ),
+            .conversation
+        )
     }
 
     func testTypedRemoteCommandsActivateExForLocalSession() {

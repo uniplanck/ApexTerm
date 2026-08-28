@@ -339,10 +339,17 @@ public struct ApexActionRegistry: Sendable {
             systemImage: "doc.on.clipboard"
         ),
         ApexActionDescriptor(
+            id: "terminal.conversation.send",
+            title: "Send in C Mode",
+            subtitle: "Send the command from the conversation-mode composer",
+            keywords: ["terminal", "conversation", "chat", "send", "command", "送信", "会話"],
+            systemImage: "arrow.up.circle.fill"
+        ),
+        ApexActionDescriptor(
             id: "terminal.transcript.cycle",
             title: "Cycle Transcript Mode",
-            subtitle: "Cycle command transcript through On, Off, and Ex",
-            keywords: ["transcript", "history", "on", "off", "ex", "履歴", "表示"],
+            subtitle: "Cycle command transcript through On, Off, Ex, and C",
+            keywords: ["transcript", "history", "on", "off", "ex", "conversation", "chat", "履歴", "表示", "会話"],
             systemImage: "rectangle.3.group"
         ),
         ApexActionDescriptor(

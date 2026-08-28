@@ -720,8 +720,7 @@ struct SplitTreeView: View {
                     sessionID: session.id,
                     limit: transcriptMode.recordLimit
                 )
-                let showsTranscript = transcriptMode != .ex
-                    && transcriptMode.showsTranscript
+                let showsTranscript = transcriptMode.showsTranscript
                     && !recentCommands.isEmpty
                 let minimumLivePaneHeight: CGFloat = 76
                 let maximumLivePaneHeight = max(
@@ -900,7 +899,7 @@ struct SplitTreeView: View {
                                 smartPasteProtectionEnabled: model.smartPasteProtectionEnabled,
                                 multilinePasteConfirmationEnabled: model.multilinePasteConfirmationEnabled
                             ),
-                            isActive: isActive && transcriptMode != .ex,
+                            isActive: isActive && transcriptMode != .conversation,
                             onTitleChange: { title in
                                 model.updateTerminalTitle(title, sessionID: session.id)
                             },
@@ -931,16 +930,23 @@ struct SplitTreeView: View {
                             maxHeight: showsTranscript ? effectiveLivePaneHeight : .infinity
                         )
                         .layoutPriority(showsTranscript ? 0 : 1)
-                        .opacity(transcriptMode == .ex ? 0 : 1)
-                        .accessibilityHidden(transcriptMode == .ex)
+                        .opacity(transcriptMode == .conversation ? 0 : 1)
+                        .allowsHitTesting(transcriptMode != .conversation)
+                        .accessibilityHidden(transcriptMode == .conversation)
                         .id(session.id)
                     }
 
-                    if transcriptMode == .ex {
+                    if transcriptMode == .conversation {
                         TerminalConversationView(
                             records: recentCommands,
                             appearance: model.terminalAppearance,
                             fontSize: model.terminalFontSize,
+                            collapsedLineLimit: model.conversationCollapsedLineLimit,
+                            sendShortcut: model.keybindingChord(
+                                for: "terminal.conversation.send",
+                                scope: .terminal
+                            ),
+                            statusText: model.conversationComposerStatus(sessionID: session.id),
                             draft: Binding(
                                 get: { model.terminalConversationDrafts[session.id] ?? "" },
                                 set: { model.terminalConversationDrafts[session.id] = $0 }

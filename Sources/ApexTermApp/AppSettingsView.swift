@@ -15,6 +15,12 @@ struct AppSettingsView: View {
     @ObservedObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
     @AppStorage("quickTerminalPinned") private var quickTerminalPinned = false
+    @AppStorage(AutoCopyToastPreferences.scaleKey)
+    private var autoCopyToastScale = AutoCopyToastPreferences.defaultScale
+    @AppStorage(AutoCopyToastPreferences.durationKey)
+    private var autoCopyToastDuration = AutoCopyToastPreferences.defaultDuration
+    @AppStorage(AutoCopyToastPreferences.transparencyKey)
+    private var autoCopyToastTransparency = AutoCopyToastPreferences.defaultTransparency
 
     var body: some View {
         VStack(spacing: 0) {
@@ -159,6 +165,19 @@ struct AppSettingsView: View {
                     isOn: $model.commandBlocksStartCollapsed
                 )
                 .disabled(model.commandTranscriptMode == .off)
+
+                Stepper(
+                    "C mode collapsed preview: \(model.conversationCollapsedLineLimit) line\(model.conversationCollapsedLineLimit == 1 ? "" : "s")",
+                    value: $model.conversationCollapsedLineLimit,
+                    in: 1...8,
+                    step: 1
+                )
+                .accessibilityIdentifier("conversation-collapsed-line-limit")
+
+                Text("C mode send shortcut is configured under Keyboard Shortcuts → Send in C Mode. Default: ⌘↩.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
                 Toggle("Smart paste protection", isOn: $model.smartPasteProtectionEnabled)
                 Toggle(
                     "Confirm before multi-line paste",
@@ -171,6 +190,79 @@ struct AppSettingsView: View {
                     isOn: $model.autoCopyCommandOutputEnabled
                 )
                 .accessibilityIdentifier("auto-copy-command-output-toggle")
+
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Copy notification")
+                                .font(.subheadline.weight(.semibold))
+                            Text("Shown in the center of the Mac after automatic output copy.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Preview") {
+                            AutoCopyToastPresenter.shared.showOutputCopied()
+                        }
+                        .controlSize(.small)
+                        .accessibilityIdentifier("auto-copy-toast-preview")
+                    }
+
+                    HStack(spacing: 10) {
+                        Text("Size")
+                            .frame(width: 86, alignment: .leading)
+                        Slider(
+                            value: $autoCopyToastScale,
+                            in: AutoCopyToastPreferences.scaleRange,
+                            step: 0.05
+                        )
+                        Text("\(Int((autoCopyToastScale * 100).rounded()))%")
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                            .frame(width: 48, alignment: .trailing)
+                    }
+                    .accessibilityIdentifier("auto-copy-toast-size")
+
+                    HStack(spacing: 10) {
+                        Text("Display time")
+                            .frame(width: 86, alignment: .leading)
+                        Slider(
+                            value: $autoCopyToastDuration,
+                            in: AutoCopyToastPreferences.durationRange,
+                            step: 0.25
+                        )
+                        Text(String(format: "%.2gs", autoCopyToastDuration))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                            .frame(width: 48, alignment: .trailing)
+                    }
+                    .accessibilityIdentifier("auto-copy-toast-duration")
+
+                    HStack(spacing: 10) {
+                        Text("Transparency")
+                            .frame(width: 86, alignment: .leading)
+                        Slider(
+                            value: $autoCopyToastTransparency,
+                            in: AutoCopyToastPreferences.transparencyRange,
+                            step: 0.05
+                        )
+                        Text("\(Int((autoCopyToastTransparency * 100).rounded()))%")
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                            .frame(width: 48, alignment: .trailing)
+                    }
+                    .accessibilityIdentifier("auto-copy-toast-transparency")
+                }
+                .padding(10)
+                .background(
+                    Color.primary.opacity(0.035),
+                    in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                }
+
                 Toggle("Auto-collapse large outputs", isOn: $model.autoCollapseLargeOutputsEnabled)
 
                 Stepper(

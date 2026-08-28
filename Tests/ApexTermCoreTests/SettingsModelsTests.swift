@@ -70,6 +70,13 @@ final class SettingsModelsTests: XCTestCase {
             "⌥⌘C"
         )
         XCTAssertEqual(
+            document.keybinding(
+                for: "terminal.conversation.send",
+                scope: .terminal
+            )?.chord.displayName,
+            "⌘↩"
+        )
+        XCTAssertEqual(
             document.keybinding(for: "terminal.transcript.cycle")?.chord.displayName,
             "⌥⌘T"
         )
