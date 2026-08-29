@@ -795,7 +795,7 @@ final class PTYRoundTripTests: XCTestCase {
     }
 
     @MainActor
-    func testRapidFrameResizeKeepsTerminalAndPTYWindowSizeInSync() {
+    func testRapidFrameResizeKeepsTerminalAndPTYWindowSizeInSync() async {
         let terminal = ApexLocalProcessTerminalView(
             frame: CGRect(x: 0, y: 0, width: 640, height: 480)
         )
@@ -813,7 +813,7 @@ final class PTYRoundTripTests: XCTestCase {
                 terminal.terminateSession(scope: .processGroup)
             }
         }
-        Thread.sleep(forTimeInterval: 0.1)
+        try? await Task.sleep(for: .milliseconds(100))
 
         let sizes = [
             NSSize(width: 520, height: 310),
@@ -835,9 +835,10 @@ final class PTYRoundTripTests: XCTestCase {
             data: Array("printf '__RAPID_PTY_SIZE__'; stty size\n".utf8)[...]
         )
 
-        XCTAssertTrue(waitUntil(timeout: 2) {
+        let synchronized = await waitUntilAsync(timeout: 2) {
             output.contains(expected)
-        }, "expected=\(expected) output=\(output)")
+        }
+        XCTAssertTrue(synchronized, "expected=\(expected) output=\(output)")
         XCTAssertGreaterThan(expectedRows, 0)
         XCTAssertGreaterThan(expectedCols, 0)
     }

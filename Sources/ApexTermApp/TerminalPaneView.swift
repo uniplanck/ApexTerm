@@ -1533,9 +1533,11 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
         super.mouseUp(with: event)
     }
 
-    override func keyDown(with event: NSEvent) {
-        handleApexKeyDown(event)
-        super.keyDown(with: event)
+    override func send(source: TerminalView, data: ArraySlice<UInt8>) {
+        if localControlCRecoveryEnabled, data.count == 1, data.first == 0x03 {
+            armControlCRecovery()
+        }
+        super.send(source: source, data: data)
     }
 
     override func viewDidEndLiveResize() {
