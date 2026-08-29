@@ -45,6 +45,7 @@ struct TerminalPaneView: NSViewRepresentable {
             host.noteConfigured(session)
         }
         let didAttach = host.attach(container)
+        container.setInteractionActive(isActive)
         if didAttach {
             container.prepareForPresentation()
         }
@@ -685,7 +686,6 @@ final class ApexTerminalContainerView: NSView {
     private var promptDecorations: [PromptDecoration] = []
     private var selectedDecoration: PromptDecoration?
     private var scrollMonitor: Any?
-    private var keyMonitor: Any?
     private var visibilityObservers: [NSObjectProtocol] = []
     private let promptProbePath = ProcessInfo.processInfo.environment[
         "APEXTERM_PROMPT_DECORATION_PROBE_FILE"
@@ -744,7 +744,6 @@ final class ApexTerminalContainerView: NSView {
 
     func prepareForPresentation() {
         installScrollMonitor()
-        installKeyMonitor()
         installVisibilityObservers()
         needsLayout = true
         layoutSubtreeIfNeeded()
@@ -765,7 +764,6 @@ final class ApexTerminalContainerView: NSView {
     func prepareForDetachment() {
         terminal.cancelPendingFocusRequest()
         removeScrollMonitor()
-        removeKeyMonitor()
         removeVisibilityObservers()
     }
 
@@ -856,27 +854,6 @@ final class ApexTerminalContainerView: NSView {
         }
     }
 
-    private func installKeyMonitor() {
-        removeKeyMonitor()
-        guard window != nil else { return }
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self,
-                  event.window === window,
-                  window?.firstResponder === terminal else {
-                return event
-            }
-            terminal.handleApexKeyDown(event)
-            return event
-        }
-    }
-
-    private func removeKeyMonitor() {
-        if let keyMonitor {
-            NSEvent.removeMonitor(keyMonitor)
-            self.keyMonitor = nil
-        }
-    }
-
     private func installVisibilityObservers() {
         removeVisibilityObservers()
         let center = NotificationCenter.default
@@ -917,7 +894,6 @@ final class ApexTerminalContainerView: NSView {
     func invalidate() {
         terminal.cancelPendingFocusRequest()
         removeScrollMonitor()
-        removeKeyMonitor()
         terminal.onPromptStarted = nil
         terminal.onTerminalRowsShifted = nil
         removeAllPromptDecorations()
@@ -1187,6 +1163,7 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
     private var sixelFilter = TerminalSixelSafetyFilter()
     private var programmaticInputEnabled = false
     private var interactionActive = false
+    private var forcedSelectionDragActive = false
     private var capturedCommand = ""
     private var capturedOutput: [UInt8] = []
     private var commandStartedAt: Date?
@@ -1517,58 +1494,88 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        onActivate?()
+        if !interactionActive {
+            onActivate?()
+        }
         cancelPendingFocusRequest()
         window?.makeFirstResponder(self)
 
-        let forceSelection = forceApexSelection(for: event)
-        let previousMouseReporting = allowMouseReporting
-        if forceSelection {
-            // SwiftTerm normally lets Shift bypass TUI mouse reporting, but a TUI
-            // can claim Shift via XTSHIFTESCAPE. ApexTerm reserves Shift-drag as a
-            // reliable local selection escape hatch without changing TUI mouse mode.
-            allowMouseReporting = false
-        }
-        defer {
-            if forceSelection {
-                allowMouseReporting = previousMouseReporting
+        forcedSelectionDragActive = shouldForceTerminalSelection(event)
+        if forcedSelectionDragActive {
+            withMouseReportingDisabled {
+                super.mouseDown(with: event)
             }
+        } else {
+            super.mouseDown(with: event)
         }
-        super.mouseDown(with: event)
     }
 
     override func mouseDragged(with event: NSEvent) {
-        let forceSelection = forceApexSelection(for: event)
-        let previousMouseReporting = allowMouseReporting
-        if forceSelection {
-            allowMouseReporting = false
-        }
-        defer {
-            if forceSelection {
-                allowMouseReporting = previousMouseReporting
+        if forcedSelectionDragActive || shouldForceTerminalSelection(event) {
+            forcedSelectionDragActive = true
+            withMouseReportingDisabled {
+                super.mouseDragged(with: event)
             }
+            return
         }
         super.mouseDragged(with: event)
     }
 
     override func mouseUp(with event: NSEvent) {
-        let forceSelection = forceApexSelection(for: event)
-        let previousMouseReporting = allowMouseReporting
-        if forceSelection {
-            allowMouseReporting = false
-        }
-        defer {
-            if forceSelection {
-                allowMouseReporting = previousMouseReporting
+        let forcedSelection = forcedSelectionDragActive || shouldForceTerminalSelection(event)
+        defer { forcedSelectionDragActive = false }
+        if forcedSelection {
+            withMouseReportingDisabled {
+                super.mouseUp(with: event)
             }
+            return
         }
         super.mouseUp(with: event)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        handleApexKeyDown(event)
+        super.keyDown(with: event)
+    }
+
+    override func viewDidEndLiveResize() {
+        super.viewDidEndLiveResize()
+        guard bounds.width > 0, bounds.height > 0 else { return }
+
+        // SwiftTerm throttles Metal redraws while AppKit reports a live resize.
+        // Re-run the final frame/grid path after `inLiveResize` becomes false,
+        // then explicitly synchronize the PTY winsize so renderer and child TUI
+        // finish on the same rows/cols even when intermediate resize events coalesce.
+        setFrameSize(frame.size)
+        if process.running {
+            sizeChanged(
+                source: self,
+                newCols: terminal.cols,
+                newRows: terminal.rows
+            )
+        }
+        needsDisplay = true
+        layer?.setNeedsDisplay()
+        displayIfNeeded()
     }
 
     func handleApexKeyDown(_ event: NSEvent) {
         if localControlCRecoveryEnabled, isControlC(event) {
             armControlCRecovery()
         }
+    }
+
+    private func shouldForceTerminalSelection(_ event: NSEvent) -> Bool {
+        event.modifierFlags
+            .intersection(.deviceIndependentFlagsMask)
+            .contains(.shift)
+    }
+
+    private func withMouseReportingDisabled(_ action: () -> Void) {
+        let previous = allowMouseReporting
+        allowMouseReporting = false
+        defer { allowMouseReporting = previous }
+        action()
     }
 
     override func rightMouseDown(with event: NSEvent) {
@@ -1807,7 +1814,7 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
             cancelControlCRecovery()
             promptReadinessTask?.cancel()
             promptReadinessTask = nil
-            clearResidualKittyKeyboardModeAtPrompt()
+            recoverResidualInputModesAtPrompt()
             reportPromptReadiness(true)
         case .commandInputStarted:
             promptReadinessTask?.cancel()
@@ -1850,13 +1857,25 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
         }
     }
 
-    private func clearResidualKittyKeyboardModeAtPrompt() {
-        guard !terminal.keyboardEnhancementFlags.isEmpty else { return }
+    private func recoverResidualInputModesAtPrompt() {
+        if !terminal.keyboardEnhancementFlags.isEmpty {
+            // A TUI can terminate before restoring the Kitty keyboard mode it pushed.
+            // Pop beyond SwiftTerm's 16-entry stack limit at a fresh shell prompt so
+            // Control-C returns to the legacy 0x03 byte expected by the PTY line discipline.
+            terminal.feed(text: "\u{001B}[<17u")
+        }
 
-        // A TUI can terminate before restoring the Kitty keyboard mode it pushed.
-        // Pop beyond SwiftTerm's 16-entry stack limit at a fresh shell prompt so
-        // Control-C returns to the legacy 0x03 byte expected by the PTY line discipline.
-        terminal.feed(text: "\u{001B}[<17u")
+        // Plain local shells enable Control-C recovery; tmux/remote sessions do not.
+        // Reaching OSC 133 prompt-start means the foreground TUI has relinquished the
+        // PTY. If it crashed without leaving alternate-screen or mouse mode, those
+        // modes are stale and must not keep owning mouse/key input at the shell prompt.
+        guard localControlCRecoveryEnabled else { return }
+        if terminal.mouseMode != .off {
+            terminal.feed(text: "\u{001B}[?1000l\u{001B}[?1002l\u{001B}[?1003l\u{001B}[?1006l")
+        }
+        if terminal.isCurrentBufferAlternate {
+            terminal.feed(text: "\u{001B}[?1049l")
+        }
     }
 
     func setLocalControlCRecoveryEnabled(_ enabled: Bool) {

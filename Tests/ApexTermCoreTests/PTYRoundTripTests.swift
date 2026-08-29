@@ -152,6 +152,132 @@ final class PTYRoundTripTests: XCTestCase {
     }
 
     @MainActor
+    func testPromptStartRecoversStaleAlternateScreenAndMouseModeForPlainLocalShell() {
+        let terminal = ApexLocalProcessTerminalView(
+            frame: CGRect(x: 0, y: 0, width: 640, height: 480)
+        )
+        terminal.setLocalControlCRecoveryEnabled(true)
+        terminal.terminal.feed(text: "\u{001B}[?1049h")
+        terminal.terminal.feed(text: "\u{001B}[?1000h\u{001B}[?1006h")
+        terminal.terminal.feed(text: "\u{001B}[=1;1u")
+
+        XCTAssertTrue(terminal.terminal.isCurrentBufferAlternate)
+        XCTAssertNotEqual(terminal.terminal.mouseMode, .off)
+        XCTAssertFalse(terminal.terminal.keyboardEnhancementFlags.isEmpty)
+
+        terminal.handleSemanticEvent(.promptStarted)
+
+        XCTAssertFalse(terminal.terminal.isCurrentBufferAlternate)
+        XCTAssertEqual(terminal.terminal.mouseMode, .off)
+        XCTAssertTrue(terminal.terminal.keyboardEnhancementFlags.isEmpty)
+    }
+
+    @MainActor
+    func testNormalShellDragSelectsAndCopiesText() throws {
+        let terminal = ApexLocalProcessTerminalView(
+            frame: CGRect(x: 0, y: 0, width: 640, height: 480)
+        )
+        let window = NSWindow(
+            contentRect: CGRect(x: 0, y: 0, width: 640, height: 480),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = terminal
+        terminal.frame = window.contentView?.bounds ?? terminal.frame
+        terminal.terminal.feed(
+            text: String(repeating: "selection-target-abcdefghijklmnopqrstuvwxyz\r\n", count: 48)
+        )
+
+        let start = NSPoint(x: 70, y: 240)
+        let end = NSPoint(x: 260, y: 240)
+        terminal.mouseDown(with: try mouseEvent(
+            type: .leftMouseDown,
+            location: start,
+            modifiers: [],
+            windowNumber: window.windowNumber
+        ))
+        terminal.mouseDragged(with: try mouseEvent(
+            type: .leftMouseDragged,
+            location: end,
+            modifiers: [],
+            windowNumber: window.windowNumber
+        ))
+        terminal.mouseUp(with: try mouseEvent(
+            type: .leftMouseUp,
+            location: end,
+            modifiers: [],
+            windowNumber: window.windowNumber
+        ))
+
+        XCTAssertTrue(terminal.selectionActive)
+        let pasteboard = NSPasteboard.general
+        let original = pasteboard.string(forType: .string)
+        defer {
+            pasteboard.clearContents()
+            if let original {
+                pasteboard.setString(original, forType: .string)
+            }
+        }
+        terminal.copy(terminal)
+        XCTAssertFalse(pasteboard.string(forType: .string)?.isEmpty ?? true)
+    }
+
+    @MainActor
+    func testShiftDragForcesSelectionWhileTUIOwnsNormalMouseInput() throws {
+        let terminal = ApexLocalProcessTerminalView(
+            frame: CGRect(x: 0, y: 0, width: 640, height: 480)
+        )
+        let window = NSWindow(
+            contentRect: CGRect(x: 0, y: 0, width: 640, height: 480),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = terminal
+        terminal.frame = window.contentView?.bounds ?? terminal.frame
+        terminal.terminal.feed(
+            text: String(repeating: "tui-selection-target-abcdefghijklmnopqrstuvwxyz\r\n", count: 48)
+        )
+        terminal.terminal.feed(text: "\u{001B}[?1000h\u{001B}[?1006h\u{001B}[>1s")
+        XCTAssertNotEqual(terminal.terminal.mouseMode, .off)
+        XCTAssertTrue(terminal.terminal.mouseShiftCapture)
+
+        let start = NSPoint(x: 70, y: 240)
+        let end = NSPoint(x: 280, y: 240)
+        terminal.mouseDown(with: try mouseEvent(
+            type: .leftMouseDown,
+            location: start,
+            modifiers: [.shift],
+            windowNumber: window.windowNumber
+        ))
+        terminal.mouseDragged(with: try mouseEvent(
+            type: .leftMouseDragged,
+            location: end,
+            modifiers: [.shift],
+            windowNumber: window.windowNumber
+        ))
+        terminal.mouseUp(with: try mouseEvent(
+            type: .leftMouseUp,
+            location: end,
+            modifiers: [.shift],
+            windowNumber: window.windowNumber
+        ))
+
+        XCTAssertTrue(terminal.selectionActive)
+        let pasteboard = NSPasteboard.general
+        let original = pasteboard.string(forType: .string)
+        defer {
+            pasteboard.clearContents()
+            if let original {
+                pasteboard.setString(original, forType: .string)
+            }
+        }
+        terminal.copy(terminal)
+        XCTAssertFalse(pasteboard.string(forType: .string)?.isEmpty ?? true)
+    }
+
+    @MainActor
     func testControlCKeyInterruptsForegroundPTYProcess() throws {
         let terminal = LocalProcessTerminalView(
             frame: CGRect(x: 0, y: 0, width: 640, height: 480)
@@ -227,7 +353,6 @@ final class PTYRoundTripTests: XCTestCase {
         XCTAssertTrue(foregroundStarted)
 
         let controlC = try controlKeyEvent(character: "c", keyCode: 8)
-        terminal.handleApexKeyDown(controlC)
         terminal.keyDown(with: controlC)
 
         let foregroundReleased = await waitUntilAsync(timeout: 3) {
@@ -670,6 +795,54 @@ final class PTYRoundTripTests: XCTestCase {
     }
 
     @MainActor
+    func testRapidFrameResizeKeepsTerminalAndPTYWindowSizeInSync() {
+        let terminal = ApexLocalProcessTerminalView(
+            frame: CGRect(x: 0, y: 0, width: 640, height: 480)
+        )
+        var output = ""
+        terminal.onHostData = { bytes in
+            output += String(decoding: bytes, as: UTF8.self)
+        }
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["-df"],
+            environment: Terminal.getEnvironmentVariables(termName: "xterm-256color")
+        )
+        defer {
+            if terminal.process.running {
+                terminal.terminateSession(scope: .processGroup)
+            }
+        }
+        Thread.sleep(forTimeInterval: 0.1)
+
+        let sizes = [
+            NSSize(width: 520, height: 310),
+            NSSize(width: 940, height: 610),
+            NSSize(width: 610, height: 420),
+            NSSize(width: 1_120, height: 720),
+            NSSize(width: 760, height: 500)
+        ]
+        for size in sizes {
+            terminal.setFrameSize(size)
+        }
+        terminal.viewDidEndLiveResize()
+
+        let expectedRows = terminal.terminal.rows
+        let expectedCols = terminal.terminal.cols
+        let expected = "__RAPID_PTY_SIZE__\(expectedRows) \(expectedCols)"
+        terminal.send(
+            source: terminal,
+            data: Array("printf '__RAPID_PTY_SIZE__'; stty size\n".utf8)[...]
+        )
+
+        XCTAssertTrue(waitUntil(timeout: 2) {
+            output.contains(expected)
+        }, "expected=\(expected) output=\(output)")
+        XCTAssertGreaterThan(expectedRows, 0)
+        XCTAssertGreaterThan(expectedCols, 0)
+    }
+
+    @MainActor
     func testControlZForegroundResumeAndControlBackslash() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -801,7 +974,8 @@ final class PTYRoundTripTests: XCTestCase {
     private func mouseEvent(
         type: NSEvent.EventType,
         location: NSPoint,
-        modifiers: NSEvent.ModifierFlags
+        modifiers: NSEvent.ModifierFlags,
+        windowNumber: Int = 0
     ) throws -> NSEvent {
         try XCTUnwrap(
             NSEvent.mouseEvent(
@@ -809,7 +983,7 @@ final class PTYRoundTripTests: XCTestCase {
                 location: location,
                 modifierFlags: modifiers,
                 timestamp: ProcessInfo.processInfo.systemUptime,
-                windowNumber: 0,
+                windowNumber: windowNumber,
                 context: nil,
                 eventNumber: 0,
                 clickCount: 1,
