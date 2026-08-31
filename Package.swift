@@ -17,7 +17,14 @@ let package = Package(
         .executable(name: "gag", targets: ["GagCLI"])
     ],
     dependencies: [
-        .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", from: "1.14.0")
+        // Exact pin: this post-1.20 revision contains the SIMD byte scanner,
+        // packed-cell storage, snapshot/concurrency boundary, PTY allocation
+        // reductions, and off-main Metal render path validated for ApexTerm.
+        // Return to a semantic version once these changes ship in a tagged release.
+        .package(
+            url: "https://github.com/migueldeicaza/SwiftTerm.git",
+            revision: "08f29a86c25647f024912f2db671ef31abdaadb2"
+        )
     ],
     targets: [
         .target(

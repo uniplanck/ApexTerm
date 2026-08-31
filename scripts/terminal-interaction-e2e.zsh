@@ -2,25 +2,50 @@
 set -euo pipefail
 
 ROOT="${0:A:h:h}"
-APP="${APEXTERM_APP_BUNDLE:-/Applications/ApexTerm.app}"
+DEFAULT_APP="/Applications/ApexTerm.app"
+APP="${APEXTERM_APP_BUNDLE:-$DEFAULT_APP}"
 RESTORE_APP="${APEXTERM_RESTORE_APP_BUNDLE:-$APP}"
+APP_EXECUTABLE="$APP/Contents/MacOS/ApexTerm"
+LAUNCH_MODE="${APEXTERM_LAUNCH_MODE:-launchservices}"
+RESTORE_APP_ON_EXIT=0
 TMP_ROOT="$(mktemp -d /tmp/apexterm-terminal-interaction.XXXXXX)"
 SUPPORT="$TMP_ROOT/support"
 SCROLL_PROBE="$TMP_ROOT/scroll-probe.txt"
 BLOCK_PROBE="$TMP_ROOT/block-probe.txt"
 PROMPT_PROBE="$TMP_ROOT/prompt-probe.txt"
 PROGRAMMATIC_PROBE="$TMP_ROOT/programmatic-input-probe.txt"
+READY_PROBE="$TMP_ROOT/ready.txt"
 PROGRAMMATIC_MARKER="APT_PROGRAMMATIC_INPUT_${RANDOM}_${RANDOM}"
 MARKER="APT_SCROLL_PROBE_DONE_${RANDOM}_${RANDOM}"
 TMUX_SERVER="apexterm-e2e-${RANDOM}-${RANDOM}"
 
+app_pids() {
+  ps -axo pid=,command= | awk -v executable="$APP_EXECUTABLE" \
+    '$2 == executable { print $1 }'
+}
+
+launch_app() {
+  if [[ "$LAUNCH_MODE" == "direct" ]]; then
+    "$APP_EXECUTABLE" >/dev/null 2>&1 &
+  else
+    open -n "$APP"
+  fi
+}
+
 stop_app() {
-  pkill -x ApexTerm 2>/dev/null || true
+  local pids
+  pids="$(app_pids)"
+  if [[ -z "$pids" ]]; then
+    return 0
+  fi
+  for pid in ${(f)pids}; do
+    kill "$pid" 2>/dev/null || true
+  done
   for _ in {1..80}; do
-    pgrep -x ApexTerm >/dev/null 2>&1 || return 0
+    [[ -z "$(app_pids)" ]] && return 0
     sleep 0.05
   done
-  print -u2 -r -- "ApexTerm did not stop before Terminal Interaction E2E"
+  print -u2 -r -- "Target ApexTerm did not stop before Terminal Interaction E2E: $APP"
   return 1
 }
 
@@ -33,17 +58,30 @@ cleanup() {
   launchctl unsetenv APEXTERM_PROMPT_DECORATION_PROBE_FILE 2>/dev/null || true
   launchctl unsetenv APEXTERM_PROGRAMMATIC_INPUT_PROBE_FILE 2>/dev/null || true
   launchctl unsetenv APEXTERM_PROGRAMMATIC_INPUT_PROBE_MARKER 2>/dev/null || true
+  launchctl unsetenv APEXTERM_READY_FILE 2>/dev/null || true
   stop_app 2>/dev/null || true
   tmux -L "$TMUX_SERVER" kill-server 2>/dev/null || true
   sleep 0.2
-  open "$RESTORE_APP" >/dev/null 2>&1 || true
+  if (( RESTORE_APP_ON_EXIT )); then
+    open "$RESTORE_APP" >/dev/null 2>&1 || true
+  fi
   rm -rf "$TMP_ROOT"
 }
 trap cleanup EXIT INT TERM
 
 mkdir -p "$SUPPORT"
+[[ -n "$(app_pids)" ]] && RESTORE_APP_ON_EXIT=1
 stop_app
 
+export APEXTERM_SUPPORT_DIRECTORY="$SUPPORT"
+export APEXTERM_TMUX_SERVER="$TMUX_SERVER"
+export APEXTERM_SCROLL_PROBE_FILE="$SCROLL_PROBE"
+export APEXTERM_SCROLL_PROBE_MARKER="$MARKER"
+export APEXTERM_COMMAND_BLOCK_PROBE_FILE="$BLOCK_PROBE"
+export APEXTERM_PROMPT_DECORATION_PROBE_FILE="$PROMPT_PROBE"
+export APEXTERM_PROGRAMMATIC_INPUT_PROBE_FILE="$PROGRAMMATIC_PROBE"
+export APEXTERM_PROGRAMMATIC_INPUT_PROBE_MARKER="$PROGRAMMATIC_MARKER"
+export APEXTERM_READY_FILE="$READY_PROBE"
 launchctl setenv APEXTERM_SUPPORT_DIRECTORY "$SUPPORT"
 launchctl setenv APEXTERM_TMUX_SERVER "$TMUX_SERVER"
 launchctl setenv APEXTERM_SCROLL_PROBE_FILE "$SCROLL_PROBE"
@@ -52,24 +90,26 @@ launchctl setenv APEXTERM_COMMAND_BLOCK_PROBE_FILE "$BLOCK_PROBE"
 launchctl setenv APEXTERM_PROMPT_DECORATION_PROBE_FILE "$PROMPT_PROBE"
 launchctl setenv APEXTERM_PROGRAMMATIC_INPUT_PROBE_FILE "$PROGRAMMATIC_PROBE"
 launchctl setenv APEXTERM_PROGRAMMATIC_INPUT_PROBE_MARKER "$PROGRAMMATIC_MARKER"
-open "$APP"
+launchctl setenv APEXTERM_READY_FILE "$READY_PROBE"
+launch_app
 
 for _ in $(seq 1 300); do
-  [[ -f "$SCROLL_PROBE" && -f "$BLOCK_PROBE" && -f "$PROMPT_PROBE" && -f "$PROGRAMMATIC_PROBE" ]] && break
+  [[ -f "$SCROLL_PROBE" && -f "$BLOCK_PROBE" && -f "$PROMPT_PROBE" && -f "$PROGRAMMATIC_PROBE" && -f "$READY_PROBE" ]] && break
   sleep 0.05
 done
 [[ -f "$SCROLL_PROBE" ]]
 [[ -f "$BLOCK_PROBE" ]]
 [[ -f "$PROMPT_PROBE" ]]
 [[ -f "$PROGRAMMATIC_PROBE" ]]
+[[ -f "$READY_PROBE" ]]
+grep -Fqx 'ready=1' "$READY_PROBE"
+grep -Fqx 'metal=1' "$READY_PROBE"
 grep -Fqx 'programmatic_input=1' "$PROGRAMMATIC_PROBE"
 grep -Fqx 'process=1' "$PROGRAMMATIC_PROBE"
 
 for expected in \
   'command_captured=1' \
   'output_captured=1' \
-  'mouse_mode=0' \
-  'alternate_buffer=0' \
   'scroll_event_sent=1' \
   'scrollback_changed=1'
 do

@@ -2,7 +2,7 @@
 import ApexTermCore
 import AppKit
 import Darwin
-import SwiftTerm
+@testable import SwiftTerm
 import XCTest
 
 private final class ObservedPTYTerminal: TerminalDelegate, LocalProcessDelegate, @unchecked Sendable {
@@ -51,7 +51,21 @@ private final class ObservedPTYTerminal: TerminalDelegate, LocalProcessDelegate,
     ) {}
 }
 
-private final class ProcessTerminationObserver: NSObject, LocalProcessTerminalViewDelegate {
+@MainActor
+private final class ApexProcessTerminationObserver: NSObject, ApexLocalProcessTerminalViewDelegate {
+    var onTermination: (() -> Void)?
+
+    func sizeChanged(source: ApexLocalProcessTerminalView, newCols: Int, newRows: Int) {}
+    func setTerminalTitle(source: ApexLocalProcessTerminalView, title: String) {}
+    func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
+
+    func processTerminated(source: ApexLocalProcessTerminalView, exitCode: Int32?) {
+        onTermination?()
+    }
+}
+
+@MainActor
+private final class SwiftTermProcessTerminationObserver: NSObject, LocalProcessTerminalViewDelegate {
     var onTermination: (() -> Void)?
 
     func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
@@ -113,7 +127,7 @@ final class PTYRoundTripTests: XCTestCase {
 
         XCTAssertTrue(terminal.terminal.keyboardEnhancementFlags.isEmpty)
 
-        let observer = ProcessTerminationObserver()
+        let observer = ApexProcessTerminationObserver()
         let interrupted = expectation(description: "foreground PTY process interrupted")
         observer.onTermination = {
             interrupted.fulfill()
@@ -156,7 +170,7 @@ final class PTYRoundTripTests: XCTestCase {
         let terminal = LocalProcessTerminalView(
             frame: CGRect(x: 0, y: 0, width: 640, height: 480)
         )
-        let observer = ProcessTerminationObserver()
+        let observer = SwiftTermProcessTerminationObserver()
         let interrupted = expectation(description: "foreground PTY process interrupted")
         observer.onTermination = {
             interrupted.fulfill()
@@ -378,20 +392,31 @@ final class PTYRoundTripTests: XCTestCase {
         let terminal = ApexLocalProcessTerminalView(
             frame: CGRect(x: 0, y: 0, width: 640, height: 480)
         )
-        terminal.terminal.feed(text: "selection-target")
-        terminal.terminal.feed(text: "\u{001B}[?1000h\u{001B}[>1s")
+        let window = NSWindow(
+            contentRect: CGRect(x: 0, y: 0, width: 640, height: 480),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = terminal
+        terminal.frame = window.contentView?.bounds ?? terminal.frame
+        terminal.layoutSubtreeIfNeeded()
+        defer { window.contentView = nil }
+
+        terminal.feed(text: "selection-target")
+        terminal.feed(text: "\u{001B}[?1000h\u{001B}[>1s")
         XCTAssertNotEqual(terminal.terminal.mouseMode, .off)
         XCTAssertTrue(terminal.terminal.mouseShiftCapture)
 
         let y = terminal.bounds.height - 8
         let down = try mouseEvent(
             type: .leftMouseDown,
-            location: NSPoint(x: 2, y: y),
+            location: NSPoint(x: 0, y: y),
             modifiers: .shift
         )
         let dragStart = try mouseEvent(
             type: .leftMouseDragged,
-            location: NSPoint(x: 8, y: y),
+            location: NSPoint(x: 1, y: y),
             modifiers: .shift
         )
         let drag = try mouseEvent(
@@ -409,6 +434,11 @@ final class PTYRoundTripTests: XCTestCase {
         terminal.mouseDragged(with: dragStart)
         terminal.mouseDragged(with: drag)
         terminal.mouseUp(with: up)
+        let selectedText = terminal.selection.getSelectedText()
+        XCTAssertTrue(
+            selectedText.contains("selection-target"),
+            "Shift-drag selection was not created; selected=\(selectedText.debugDescription)"
+        )
         terminal.copy(terminal)
 
         XCTAssertTrue(
@@ -418,7 +448,7 @@ final class PTYRoundTripTests: XCTestCase {
     }
 
     @MainActor
-    func testRemoteTrustPolicyBlocksOSC52ClipboardAccess() {
+    func testRemoteTrustPolicyBlocksOSC52ClipboardAccess() async {
         let pasteboard = NSPasteboard.general
         let original = pasteboard.string(forType: .string)
         defer {
@@ -445,6 +475,10 @@ final class PTYRoundTripTests: XCTestCase {
 
         terminal.configureTrustPolicy(.localDefault)
         terminal.dataReceived(slice: writeSequence[...])
+        let localWriteDelivered = await waitUntilAsync(timeout: 1) {
+            pasteboard.string(forType: .string) == "Hello"
+        }
+        XCTAssertTrue(localWriteDelivered)
         XCTAssertEqual(pasteboard.string(forType: .string), "Hello")
     }
 
@@ -574,8 +608,8 @@ final class PTYRoundTripTests: XCTestCase {
         terminal.configureResourceBudget()
 
         XCTAssertEqual(
-            terminal.terminal.options.kittyImageCacheLimitBytes,
-            64 * 1_024 * 1_024
+            terminal.terminal.options.kittyGraphics.storageLimitBytesPerScreen,
+            UInt32(64 * 1_024 * 1_024)
         )
         XCTAssertFalse(terminal.terminal.options.enableSixelReported)
     }

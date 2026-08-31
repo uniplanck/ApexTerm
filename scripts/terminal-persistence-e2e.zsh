@@ -2,8 +2,12 @@
 set -euo pipefail
 
 ROOT="${0:A:h:h}"
-APP="/Applications/ApexTerm.app"
-CTL="$ROOT/.build/release/apextermctl"
+DEFAULT_APP="/Applications/ApexTerm.app"
+APP="${APEXTERM_APP_BUNDLE:-$DEFAULT_APP}"
+APP_EXECUTABLE="$APP/Contents/MacOS/ApexTerm"
+LAUNCH_MODE="${APEXTERM_LAUNCH_MODE:-launchservices}"
+RESTORE_APP_ON_EXIT=0
+CTL="${APEXTERM_CTL:-$ROOT/.build/release/apextermctl}"
 TMP_ROOT="$(mktemp -d /tmp/apexterm-terminal-persistence.XXXXXX)"
 SUPPORT="$TMP_ROOT/support"
 PROBE="$TMP_ROOT/persistence.log"
@@ -14,16 +18,62 @@ W2="$(uuidgen)"
 S1="$(uuidgen)"
 S2="$(uuidgen)"
 
+app_pids() {
+  ps -axo pid=,command= | awk -v executable="$APP_EXECUTABLE" \
+    '$2 == executable { print $1 }'
+}
+
+launch_app() {
+  if [[ "$LAUNCH_MODE" == "direct" ]]; then
+    "$APP_EXECUTABLE" >/dev/null 2>&1 &
+  else
+    open -n "$APP"
+  fi
+}
+
+stop_app() {
+  local pids
+  pids="$(app_pids)"
+  if [[ -z "$pids" ]]; then
+    return 0
+  fi
+  for pid in ${(f)pids}; do
+    kill "$pid" 2>/dev/null || true
+  done
+  for _ in {1..80}; do
+    [[ -z "$(app_pids)" ]] && return 0
+    sleep 0.05
+  done
+  print -u2 -r -- "Target ApexTerm did not stop before Terminal Persistence E2E: $APP"
+  return 1
+}
+
+wait_for_app_pid() {
+  local pid
+  for _ in {1..120}; do
+    pid="$(app_pids | head -1)"
+    if [[ -n "$pid" ]]; then
+      print -r -- "$pid"
+      return 0
+    fi
+    sleep 0.05
+  done
+  print -u2 -r -- "Target ApexTerm did not launch for Terminal Persistence E2E: $APP"
+  return 1
+}
+
 cleanup() {
   launchctl unsetenv APEXTERM_SUPPORT_DIRECTORY 2>/dev/null || true
   launchctl unsetenv APEXTERM_TERMINAL_PERSISTENCE_PROBE_FILE 2>/dev/null || true
   launchctl unsetenv APEXTERM_TERMINAL_PERSISTENCE_MARKER 2>/dev/null || true
   launchctl unsetenv APEXTERM_PROGRAMMATIC_INPUT_PROBE_FILE 2>/dev/null || true
   launchctl unsetenv APEXTERM_PROGRAMMATIC_INPUT_PROBE_MARKER 2>/dev/null || true
-  pkill -x ApexTerm 2>/dev/null || true
+  stop_app 2>/dev/null || true
   pkill -f "$SUPPORT/shell-integration/tmux.conf" 2>/dev/null || true
   sleep 0.25
-  open "$APP" >/dev/null 2>&1 || true
+  if (( RESTORE_APP_ON_EXIT )); then
+    open "$APP" >/dev/null 2>&1 || true
+  fi
   rm -rf "$TMP_ROOT"
 }
 trap cleanup EXIT INT TERM
@@ -73,14 +123,21 @@ jq -n \
     ]
   }' > "$SUPPORT/workspaces.json"
 
-pkill -x ApexTerm 2>/dev/null || true
+[[ -n "$(app_pids)" ]] && RESTORE_APP_ON_EXIT=1
+stop_app
 sleep 0.3
+export APEXTERM_SUPPORT_DIRECTORY="$SUPPORT"
+export APEXTERM_TERMINAL_PERSISTENCE_PROBE_FILE="$PROBE"
+export APEXTERM_TERMINAL_PERSISTENCE_MARKER="$MARKER"
+export APEXTERM_PROGRAMMATIC_INPUT_PROBE_FILE="$PROGRAMMATIC_PROBE"
+export APEXTERM_PROGRAMMATIC_INPUT_PROBE_MARKER="$MARKER"
 launchctl setenv APEXTERM_SUPPORT_DIRECTORY "$SUPPORT"
 launchctl setenv APEXTERM_TERMINAL_PERSISTENCE_PROBE_FILE "$PROBE"
 launchctl setenv APEXTERM_TERMINAL_PERSISTENCE_MARKER "$MARKER"
 launchctl setenv APEXTERM_PROGRAMMATIC_INPUT_PROBE_FILE "$PROGRAMMATIC_PROBE"
 launchctl setenv APEXTERM_PROGRAMMATIC_INPUT_PROBE_MARKER "$MARKER"
-open "$APP"
+launch_app
+APP_PID="$(wait_for_app_pid)"
 
 SOCKET="$SUPPORT/runtime/apexterm.sock"
 for _ in $(seq 1 240); do
@@ -139,10 +196,10 @@ reuse_pid="$(grep -F "reuse:$S1:buffer=1:pid=" "$PROBE" | tail -1 | sed 's/.*pid
 [[ "$reuse_pid" == "$initial_pid" ]]
 kill -0 "$initial_pid"
 
-osascript -e 'tell application "System Events" to set visible of process "ApexTerm" to false' >/dev/null
+osascript -e "tell application \"System Events\" to set visible of first process whose unix id is $APP_PID to false" >/dev/null
 sleep 0.35
-osascript -e 'tell application "System Events" to set visible of process "ApexTerm" to true' >/dev/null
-osascript -e 'tell application "ApexTerm" to activate' >/dev/null
+osascript -e "tell application \"System Events\" to set visible of first process whose unix id is $APP_PID to true" >/dev/null
+osascript -e "tell application \"System Events\" to set frontmost of first process whose unix id is $APP_PID to true" >/dev/null
 sleep 0.5
 
 APEXTERM_SUPPORT_DIRECTORY="$SUPPORT" "$CTL" workspace "$W2" >/dev/null

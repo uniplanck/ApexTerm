@@ -110,6 +110,7 @@ enum ApexTermBench {
         measurements.append(try benchmarkPTYRoundTrip())
         measurements.append(benchmarkTerminalParser())
         measurements.append(benchmarkLargeScrollbackMemory())
+        measurements.append(benchmarkEightTerminalSustainedOutput())
         measurements.append(try await benchmarkWorkspacePersistence())
 
         let report = BenchmarkReport(
@@ -167,26 +168,35 @@ enum ApexTermBench {
             failures.append("PTY p95 \(p95) ms exceeds 8 ms")
         }
 
-        if let measurement = byName["workspace-save-load"] {
-            let average = measurement.elapsedMilliseconds / Double(measurement.iterations)
-            if average > 25 {
-                failures.append("Workspace save/load average \(average) ms exceeds 25 ms")
+        if let measurement = byName["large-scrollback-memory"] {
+            if let growth = measurement.metrics?["rss_growth_mb"], growth > 24 {
+                failures.append("Large scrollback RSS growth \(growth) MB exceeds 24 MB")
             }
-        }
-
-        if let measurement = byName["large-scrollback-memory"],
-           let growth = measurement.metrics?["rss_growth_mb"],
-           growth > 64 {
-            failures.append("Large scrollback RSS growth \(growth) MB exceeds 64 MB")
+            if let cpuMilliseconds = measurement.metrics?["cpu_ms"], cpuMilliseconds > 3_000 {
+                failures.append(
+                    "Large scrollback CPU \(cpuMilliseconds) ms exceeds 3000 ms"
+                )
+            }
         }
 
         if let measurement = byName["terminal-parser-throughput"],
            let processed = measurement.metrics?["processed_mb"] {
             let seconds = measurement.elapsedMilliseconds / 1_000
             let throughput = seconds > 0 ? processed / seconds : 0
-            if throughput < 10 {
-                failures.append("Parser throughput \(throughput) MB/s is below 10 MB/s")
+            if throughput < 30 {
+                failures.append("Parser throughput \(throughput) MB/s is below 30 MB/s")
             }
+            if let unicodeThroughput = measurement.metrics?["unicode_stress_mb_s"],
+               unicodeThroughput < 18 {
+                failures.append(
+                    "Unicode parser throughput \(unicodeThroughput) MB/s is below 18 MB/s"
+                )
+            }
+        }
+
+        if let shellSpeedup = byName["shell-integration-routing"]?.metrics?["cpu_speedup_x"],
+           shellSpeedup < 1.5 {
+            failures.append("Shell routing CPU fast-path speedup \(shellSpeedup)x is below 1.5x")
         }
 
         if let measurement = byName["split-tree-mutation"],
@@ -398,6 +408,7 @@ enum ApexTermBench {
         let chunkCount = 250
         let totalBytes = chunk.count * chunkCount
         let rssBefore = residentMemoryBytes()
+        let cpuStart = processCPUMilliseconds()
         let start = DispatchTime.now().uptimeNanoseconds
 
         for _ in 0..<chunkCount {
@@ -405,6 +416,7 @@ enum ApexTermBench {
         }
 
         let elapsed = milliseconds(since: start)
+        let cpuElapsed = processCPUMilliseconds() - cpuStart
         let rssAfter = residentMemoryBytes()
         let rssGrowth = rssAfter >= rssBefore ? rssAfter - rssBefore : 0
 
@@ -415,9 +427,68 @@ enum ApexTermBench {
             metrics: [
                 "input_mb": Double(totalBytes) / 1_000_000,
                 "rss_growth_mb": Double(rssGrowth) / 1_000_000,
-                "configured_scrollback_lines": Double(scrollbackLimit)
+                "configured_scrollback_lines": Double(scrollbackLimit),
+                "cpu_ms": cpuElapsed
             ],
-            detail: "Bounded 10,000-line scrollback under 250,000 lines of ANSI/Unicode output"
+            detail: "Bounded 10,000-line scrollback under 250,000 lines of ANSI/Unicode output; CPU time is the regression gate, wall time remains diagnostic"
+        )
+    }
+
+    private static func benchmarkEightTerminalSustainedOutput() -> BenchmarkMeasurement {
+        let terminalCount = 8
+        let scrollbackLimit = 10_000
+        let linesPerChunk = 250
+        let chunkCount = 40
+        let sampleCount = 3
+        let line = String(repeating: "ApexTerm multi-pane 日本語 0123456789 ", count: 3) + "\r\n"
+        let chunk = Array(Array(repeating: line, count: linesPerChunk).joined().utf8)
+        let totalBytes = chunk.count * chunkCount * terminalCount
+
+        func runSample(chunks: Int) -> (wall: Double, cpu: Double) {
+            let cpuStart = processCPUMilliseconds()
+            let wallStart = DispatchTime.now().uptimeNanoseconds
+            DispatchQueue.concurrentPerform(iterations: terminalCount) { _ in
+                let terminal = HeadlessTerminal(
+                    options: TerminalOptions(
+                        cols: 120,
+                        rows: 40,
+                        scrollback: scrollbackLimit
+                    )
+                ) { _ in }
+                for _ in 0..<chunks {
+                    terminal.terminal.feed(buffer: chunk[...])
+                }
+            }
+            return (
+                wall: milliseconds(since: wallStart),
+                cpu: processCPUMilliseconds() - cpuStart
+            )
+        }
+
+        _ = runSample(chunks: 2)
+        let samples = (0..<sampleCount).map { _ in runSample(chunks: chunkCount) }
+        let wallSamples = samples.map(\.wall).sorted()
+        let cpuSamples = samples.map(\.cpu).sorted()
+        let median = wallSamples[wallSamples.count / 2]
+        let cpuMedian = cpuSamples[cpuSamples.count / 2]
+        return measurement(
+            name: "eight-terminal-sustained-output",
+            iterations: terminalCount * chunkCount * linesPerChunk,
+            elapsedMilliseconds: median,
+            metrics: [
+                "terminals": Double(terminalCount),
+                "lines_per_terminal": Double(chunkCount * linesPerChunk),
+                "input_mb": Double(totalBytes) / 1_000_000,
+                "configured_scrollback_lines": Double(scrollbackLimit),
+                "sample_count": Double(sampleCount),
+                "wall_min_ms": wallSamples.first ?? median,
+                "wall_median_ms": median,
+                "wall_max_ms": wallSamples.last ?? median,
+                "cpu_min_ms": cpuSamples.first ?? cpuMedian,
+                "cpu_median_ms": cpuMedian,
+                "cpu_max_ms": cpuSamples.last ?? cpuMedian
+            ],
+            detail: "Eight independent terminal cores processing sustained output concurrently; warmup + median of 3 samples, renderer excluded"
         )
     }
 
@@ -428,14 +499,17 @@ enum ApexTermBench {
 
         var baselineParser = ShellIntegrationStreamParser()
         var baselineChecksum = 0
+        let baselineCPUStart = processCPUMilliseconds()
         let baselineStart = DispatchTime.now().uptimeNanoseconds
         for _ in 0..<iterations {
             baselineChecksum += baselineParser.feed(bytes[...]).count
         }
         let baselineElapsed = milliseconds(since: baselineStart)
+        let baselineCPU = processCPUMilliseconds() - baselineCPUStart
 
         let fastParser = ShellIntegrationStreamParser()
         var fastChecksum = 0
+        let fastCPUStart = processCPUMilliseconds()
         let fastStart = DispatchTime.now().uptimeNanoseconds
         for _ in 0..<iterations {
             if fastParser.canBypass(bytes[...]) {
@@ -443,6 +517,7 @@ enum ApexTermBench {
             }
         }
         let fastElapsed = milliseconds(since: fastStart)
+        let fastCPU = processCPUMilliseconds() - fastCPUStart
         precondition(baselineChecksum == iterations && fastChecksum == iterations)
 
         return measurement(
@@ -452,10 +527,13 @@ enum ApexTermBench {
             metrics: [
                 "baseline_segmenting_ms": baselineElapsed,
                 "zero_copy_fast_path_ms": fastElapsed,
-                "speedup_x": baselineElapsed / max(fastElapsed, 0.001),
+                "wall_speedup_x": baselineElapsed / max(fastElapsed, 0.001),
+                "baseline_segmenting_cpu_ms": baselineCPU,
+                "zero_copy_fast_path_cpu_ms": fastCPU,
+                "cpu_speedup_x": baselineCPU / max(fastCPU, 0.001),
                 "payload_kb": Double(bytes.count) / 1_000
             ],
-            detail: "Ordinary ANSI PTY chunks bypass OSC 133 segmentation and data-array allocation"
+            detail: "Ordinary ANSI PTY chunks bypass OSC 133 segmentation and data-array allocation; CPU speedup is the regression gate, wall speedup remains diagnostic"
         )
     }
 

@@ -59,6 +59,8 @@ struct TerminalPaneView: NSViewRepresentable {
         }
 
         let terminal = ApexLocalProcessTerminalView(frame: .zero)
+        terminal.metalBufferingMode = .perRowPersistent
+        terminal.suspendsRenderingWhenNotVisible = true
         let container = ApexTerminalContainerView(terminal: terminal)
         terminal.processDelegate = context.coordinator
         terminal.configureFindObserver(sessionID: session.id)
@@ -66,8 +68,8 @@ struct TerminalPaneView: NSViewRepresentable {
         terminal.onCaptureStateChanged = { [weak container] in
             container?.refreshActionButton()
         }
-        terminal.onHostData = { [weak coordinator = context.coordinator] bytes in
-            coordinator?.consumeHostData(bytes)
+        terminal.onSemanticEvent = { [weak coordinator = context.coordinator] event in
+            coordinator?.consumeSemanticEvent(event)
         }
         terminal.font = NSFont.monospacedSystemFont(
             ofSize: CGFloat(session.fontSize),
@@ -78,12 +80,6 @@ struct TerminalPaneView: NSViewRepresentable {
             "Interactive terminal session. Scroll moves through output; use Command-F to search."
         )
 
-        do {
-            try terminal.setUseMetal(true)
-        } catch {
-            // The CoreGraphics renderer remains available when Metal setup fails.
-        }
-
         context.coordinator.configure(terminal: terminal, session: session)
         store.register(
             sessionID: session.id,
@@ -93,14 +89,13 @@ struct TerminalPaneView: NSViewRepresentable {
         configure(container: container, coordinator: context.coordinator)
         terminal.configureInputProbe()
         let sessionID = session.id
-        let isUsingMetal = terminal.isUsingMetalRenderer
         Task { @MainActor [weak coordinator = context.coordinator, weak container] in
             guard let coordinator, let container else { return }
             coordinator.startProcess()
             store.noteProcessStarted(sessionID: sessionID, container: container)
             container.terminal.startInputProbeWhenReady()
             container.restoreVisiblePromptDecorationsWhenReady()
-            writeSmokeReadyMarker(isUsingMetal: isUsingMetal)
+            await writeSmokeReadyMarker(terminal: container.terminal)
         }
         return container
     }
@@ -151,12 +146,16 @@ struct TerminalPaneView: NSViewRepresentable {
         container.refreshActionButton()
     }
 
-    private func writeSmokeReadyMarker(isUsingMetal: Bool) {
+    private func writeSmokeReadyMarker(terminal: ApexLocalProcessTerminalView) async {
         guard let path = ProcessInfo.processInfo.environment["APEXTERM_READY_FILE"],
               !path.isEmpty else {
             return
         }
-        let payload = "ready=1\nmetal=\(isUsingMetal ? 1 : 0)\n"
+        for _ in 0..<40 where terminal.window == nil {
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+        terminal.enableMetalRendererWhenAttached()
+        let payload = "ready=1\nmetal=\(terminal.isUsingMetalRenderer ? 1 : 0)\n"
         try? Data(payload.utf8).write(
             to: URL(fileURLWithPath: path),
             options: [.atomic]
@@ -164,14 +163,12 @@ struct TerminalPaneView: NSViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject, @preconcurrency LocalProcessTerminalViewDelegate {
+    final class Coordinator: NSObject, ApexLocalProcessTerminalViewDelegate {
         let onTitleChange: (String) -> Void
         let onDirectoryChange: (String?) -> Void
         let onStateChange: (SessionState) -> Void
         let onSemanticEvents: ([ShellSemanticEvent]) -> Void
 
-        private let parserLock = NSLock()
-        private var shellParser = ShellIntegrationParser()
         private weak var terminal: ApexLocalProcessTerminalView?
         private var session: TerminalSessionSnapshot?
         private var isShuttingDown = false
@@ -222,7 +219,6 @@ struct TerminalPaneView: NSViewRepresentable {
                 terminal.terminateSession(scope: session.terminationScope)
             }
 
-            resetShellParser()
             terminal.prepareForProcessStart(trustPolicy: session.escapeSequenceTrustPolicy)
             transition(to: reconnectAttempt == 0 ? .starting : .reconnecting)
             let launch = session.launchPlan
@@ -269,17 +265,13 @@ struct TerminalPaneView: NSViewRepresentable {
             terminal?.setProgrammaticInputEnabled(false)
         }
 
-        func consumeHostData(_ bytes: ArraySlice<UInt8>) {
-            parserLock.lock()
-            let events = shellParser.feed(bytes)
-            parserLock.unlock()
-            guard !events.isEmpty else { return }
-            onSemanticEvents(events)
+        func consumeSemanticEvent(_ event: ShellSemanticEvent) {
+            onSemanticEvents([event])
         }
 
-        func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
+        func sizeChanged(source: ApexLocalProcessTerminalView, newCols: Int, newRows: Int) {}
 
-        func setTerminalTitle(source: LocalProcessTerminalView, title: String) {
+        func setTerminalTitle(source: ApexLocalProcessTerminalView, title: String) {
             onTitleChange(title)
         }
 
@@ -287,13 +279,12 @@ struct TerminalPaneView: NSViewRepresentable {
             onDirectoryChange(directory)
         }
 
-        func processTerminated(source: TerminalView, exitCode: Int32?) {
+        func processTerminated(source: ApexLocalProcessTerminalView, exitCode: Int32?) {
             stabilityTask?.cancel()
             stabilityTask = nil
             terminal?.setProgrammaticInputEnabled(false)
             terminal?.recoverTerminalModesAfterProcessExit()
-            let childPID = (source as? ApexLocalProcessTerminalView)?.process.shellPid ?? 0
-            scheduleChildReap(childPID)
+            scheduleChildReap(source.process.shellPid)
 
             guard !isShuttingDown else { return }
             handleProcessStopped(exitCode: exitCode)
@@ -378,12 +369,6 @@ struct TerminalPaneView: NSViewRepresentable {
         private func transition(to state: SessionState) {
             terminal?.setProgrammaticInputEnabled(state == .attached)
             onStateChange(state)
-        }
-
-        private func resetShellParser() {
-            parserLock.lock()
-            shellParser = ShellIntegrationParser()
-            parserLock.unlock()
         }
     }
 }
@@ -576,7 +561,7 @@ final class TerminalPaneRuntimeStore {
     func noteReuse(sessionID: UUID, container: ApexTerminalContainerView) {
         let bufferPreserved: Int
         if let probeMarker, !probeMarker.isEmpty {
-            let data = container.terminal.terminal.getBufferAsData(kind: .active)
+            let data = container.terminal.getBufferAsData(kind: .active)
             let text = String(decoding: data, as: UTF8.self)
             bufferPreserved = text.contains(probeMarker) ? 1 : 0
         } else {
@@ -638,7 +623,7 @@ final class TerminalPaneRuntimeStore {
         container?.invalidate()
         container?.terminal.removeFindObserver()
         container?.terminal.removeInputObserver()
-        container?.terminal.onHostData = nil
+        container?.terminal.onSemanticEvent = nil
         container?.terminal.onCommandCaptured = nil
         container?.terminal.onCaptureStateChanged = nil
         container?.terminal.onPromptReadinessChanged = nil
@@ -711,11 +696,8 @@ final class ApexTerminalContainerView: NSView {
             terminal.bottomAnchor.constraint(equalTo: bottomAnchor)
         ])
 
-        terminal.onPromptStarted = { [weak self] row in
-            self?.addPromptDecoration(row: row)
-        }
-        terminal.onTerminalRowsShifted = { [weak self] count in
-            self?.shiftPromptDecorations(upBy: count)
+        terminal.onPromptStarted = { [weak self] bufferRow in
+            self?.addPromptDecoration(row: bufferRow)
         }
     }
 
@@ -782,31 +764,18 @@ final class ApexTerminalContainerView: NSView {
                 guard terminal.process.running else { continue }
                 guard promptDecorations.isEmpty else { return }
 
-                let data = terminal.terminal.getBufferAsData(kind: .active)
-                let text = String(decoding: data, as: UTF8.self)
-                let lines = text.split(
-                    separator: "\n",
-                    omittingEmptySubsequences: false
-                )
-                let firstVisibleRow = max(0, terminal.terminal.buffer.yDisp)
-                let visibleRows = max(1, terminal.terminal.rows)
-                var matchedRows: [Int] = []
-
-                for row in 0..<visibleRows {
-                    let lineIndex = firstVisibleRow + row
-                    guard lines.indices.contains(lineIndex) else { continue }
-                    if looksLikeShellPrompt(String(lines[lineIndex])) {
-                        matchedRows.append(row)
-                    }
+                let state = terminal.terminalStateSnapshot()
+                let matchedRows = state.visibleRows.compactMap { row in
+                    looksLikeShellPrompt(row.text) ? row.row : nil
                 }
 
                 guard let latestPromptRow = matchedRows.last else { continue }
-                addPromptDecoration(row: latestPromptRow)
+                addPromptDecoration(row: state.viewportRow + latestPromptRow)
                 if let promptRestoreProbePath,
                    !promptRestoreProbePath.isEmpty {
                     let result = [
                         "restored_prompt_count=1",
-                        "restored_current_prompt=\(latestPromptRow == terminal.terminal.buffer.y ? 1 : 0)"
+                        "restored_current_prompt=\(latestPromptRow == state.cursor.row ? 1 : 0)"
                     ].joined(separator: "\n") + "\n"
                     try? Data(result.utf8).write(
                         to: URL(fileURLWithPath: promptRestoreProbePath),
@@ -919,7 +888,6 @@ final class ApexTerminalContainerView: NSView {
         removeScrollMonitor()
         removeKeyMonitor()
         terminal.onPromptStarted = nil
-        terminal.onTerminalRowsShifted = nil
         removeAllPromptDecorations()
     }
 
@@ -1037,20 +1005,6 @@ final class ApexTerminalContainerView: NSView {
         }
     }
 
-    private func shiftPromptDecorations(upBy count: Int) {
-        guard count > 0 else { return }
-        for decoration in promptDecorations {
-            decoration.row -= count
-        }
-        let removed = promptDecorations.filter { $0.row < 0 }
-        for decoration in removed {
-            decoration.button.removeFromSuperview()
-        }
-        promptDecorations.removeAll { $0.row < 0 }
-        needsLayout = true
-        layoutPromptDecorations()
-    }
-
     private func removeAllPromptDecorations() {
         for decoration in promptDecorations {
             decoration.button.removeFromSuperview()
@@ -1060,19 +1014,21 @@ final class ApexTerminalContainerView: NSView {
     }
 
     private func layoutPromptDecorations() {
-        let rows = max(1, terminal.terminal.rows)
+        let state = terminal.terminalStateSnapshot()
+        let rows = max(1, state.dimensions.rows)
         let cellHeight = terminal.bounds.height / CGFloat(rows)
         guard cellHeight.isFinite, cellHeight > 0 else { return }
 
         let isAtLiveBottom = !terminal.canScroll || terminal.scrollPosition >= 0.999
         for decoration in promptDecorations {
-            let visible = decoration.row >= 0 && decoration.row < rows && isAtLiveBottom
+            let visibleRow = decoration.row - state.viewportRow
+            let visible = visibleRow >= 0 && visibleRow < rows && isAtLiveBottom
             decoration.button.isHidden = !terminal.commandBlocksEnabled || !visible
             guard visible else { continue }
             let width: CGFloat = 18
             let height: CGFloat = 14
             let y = terminal.frame.maxY
-                - CGFloat(decoration.row + 1) * cellHeight
+                - CGFloat(visibleRow + 1) * cellHeight
                 + max(0, (cellHeight - height) / 2)
             decoration.button.frame = NSRect(x: 4, y: y, width: width, height: height)
         }
@@ -1150,12 +1106,40 @@ enum TerminalForceInterruptResult: Equatable {
     case restartedSession
 }
 
-final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
-    var onHostData: ((ArraySlice<UInt8>) -> Void)?
+#if DEBUG
+private final class ApexTerminalDebugHostObserver: @unchecked Sendable {
+    private let lock = NSLock()
+    private var callback: ((ArraySlice<UInt8>) -> Void)?
+
+    func set(_ callback: ((ArraySlice<UInt8>) -> Void)?) {
+        lock.lock()
+        self.callback = callback
+        lock.unlock()
+    }
+
+    func emit(_ bytes: [UInt8]) {
+        lock.lock()
+        let callback = self.callback
+        lock.unlock()
+        callback?(bytes[...])
+    }
+}
+#endif
+
+@MainActor
+protocol ApexLocalProcessTerminalViewDelegate: AnyObject {
+    func sizeChanged(source: ApexLocalProcessTerminalView, newCols: Int, newRows: Int)
+    func setTerminalTitle(source: ApexLocalProcessTerminalView, title: String)
+    func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?)
+    func processTerminated(source: ApexLocalProcessTerminalView, exitCode: Int32?)
+}
+
+final class ApexLocalProcessTerminalView: TerminalView, TerminalViewDelegate, LocalProcessDelegate {
+    weak var processDelegate: ApexLocalProcessTerminalViewDelegate?
+    var onSemanticEvent: ((ShellSemanticEvent) -> Void)?
     var onCommandCaptured: ((CommandExecutionRecord) -> Void)?
     var onCaptureStateChanged: (() -> Void)?
     var onPromptStarted: ((Int) -> Void)?
-    var onTerminalRowsShifted: ((Int) -> Void)?
     var onPromptReadinessChanged: ((Bool) -> Void)?
     var commandBlocksEnabled = true
     var smartPasteProtectionEnabled = true
@@ -1180,11 +1164,16 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
     private var lastControlCAt: Date?
     private var localControlCRecoveryEnabled = false
     private var commandSessionID: UUID?
-    private var streamParser = ShellIntegrationStreamParser()
-    private var trustFilter = TerminalEscapeSequenceTrustFilter(policy: .localDefault)
-    private var inlineImageFilter = TerminalInlineImageSafetyFilter(policy: .localDefault)
-    private var kittyGraphicsFilter = TerminalKittyGraphicsSafetyFilter(policy: .localDefault)
-    private var sixelFilter = TerminalSixelSafetyFilter()
+    nonisolated private let outputPipeline = ApexTerminalOutputPipeline()
+#if DEBUG
+    nonisolated private let debugHostObserver = ApexTerminalDebugHostObserver()
+    var onHostData: ((ArraySlice<UInt8>) -> Void)? {
+        didSet { debugHostObserver.set(onHostData) }
+    }
+#endif
+    private var trustPolicy = TerminalEscapeSequenceTrustPolicy.localDefault
+    private var inlineImageSafetyPolicy = TerminalInlineImageSafetyPolicy.localDefault
+    private var isAlternateBufferActive = false
     private var programmaticInputEnabled = false
     private var interactionActive = false
     private var capturedCommand = ""
@@ -1192,8 +1181,34 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
     private var commandStartedAt: Date?
     private var isCapturingOutput = false
     private var outputWasTruncated = false
-    private static let maximumCapturedOutputBytes = 2 * 1_024 * 1_024
     private static let maximumKittyImageCacheBytes = 64 * 1_024 * 1_024
+
+    lazy var process = LocalProcess(
+        delegate: self,
+        dispatchQueue: .main,
+        directDelivery: true
+    )
+
+    static func terminalOptions() -> TerminalOptions {
+        var options = TerminalOptions.default
+        options.enableSixelReported = false
+        options.kittyGraphics.storageLimitBytesPerScreen = UInt32(
+            clamping: Self.maximumKittyImageCacheBytes
+        )
+        return options
+    }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame, font: nil, options: Self.terminalOptions())
+        terminalDelegate = self
+        outputPipeline.updateWindowSize(computeWindowSize())
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        terminalDelegate = self
+        outputPipeline.updateWindowSize(computeWindowSize())
+    }
 
     var currentCommandText: String {
         capturedCommand.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1214,11 +1229,10 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
     }
 
     var promptReadySnapshot: Bool {
-        guard process.running,
-              !terminal.isCurrentBufferAlternate else {
+        guard process.running, !isAlternateBufferActive else {
             return false
         }
-        let data = terminal.getBufferAsData(kind: .active)
+        let data = getBufferAsData(kind: .active)
         return TerminalPromptHeuristic.isPromptReady(
             bufferText: String(decoding: data, as: UTF8.self)
         )
@@ -1296,32 +1310,171 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
     }
 
     func configureTrustPolicy(_ policy: TerminalEscapeSequenceTrustPolicy) {
-        guard trustFilter.policy != policy else { return }
-        trustFilter.updatePolicy(policy)
+        guard trustPolicy != policy else { return }
+        trustPolicy = policy
+        outputPipeline.updateTrustPolicy(policy)
     }
 
     func configureInlineImageSafetyPolicy(_ policy: TerminalInlineImageSafetyPolicy) {
-        guard inlineImageFilter.policy != policy
-                || kittyGraphicsFilter.policy != policy else {
-            return
-        }
-        inlineImageFilter.updatePolicy(policy)
-        kittyGraphicsFilter.updatePolicy(policy)
+        guard inlineImageSafetyPolicy != policy else { return }
+        inlineImageSafetyPolicy = policy
+        outputPipeline.updateInlineImagePolicy(policy)
     }
 
     func configureResourceBudget() {
-        terminal.options.kittyImageCacheLimitBytes = Self.maximumKittyImageCacheBytes
-        terminal.options.enableSixelReported = false
+        // Resource limits are startup-only in next-generation SwiftTerm and are
+        // applied by this view's initializer before the terminal core is created.
+    }
+
+    func startProcess(
+        executable: String = "/bin/bash",
+        args: [String] = [],
+        environment: [String]? = nil,
+        execName: String? = nil,
+        currentDirectory: String? = nil
+    ) {
+        syncProcessWindowSize(updatePTY: false)
+        process.startProcess(
+            executable: executable,
+            args: args,
+            environment: environment,
+            execName: execName,
+            currentDirectory: currentDirectory
+        )
+    }
+
+    func terminate() {
+        process.terminate()
+    }
+
+    // MARK: - TerminalView / PTY bridge
+
+    func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
+        syncProcessWindowSize()
+        processDelegate?.sizeChanged(source: self, newCols: newCols, newRows: newRows)
+    }
+
+    func setTerminalTitle(source: TerminalView, title: String) {
+        processDelegate?.setTerminalTitle(source: self, title: title)
+    }
+
+    func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {
+        processDelegate?.hostCurrentDirectoryUpdate(source: source, directory: directory)
+    }
+
+    func send(source: TerminalView, data: ArraySlice<UInt8>) {
+        process.send(data: data)
+    }
+
+    func scrolled(source: TerminalView, position: Double) {}
+    func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}
+
+    func clipboardCopy(source: TerminalView, content: Data) {
+        guard trustPolicy.clipboardAccess != .disabled,
+              let text = String(data: content, encoding: .utf8) else {
+            return
+        }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.writeObjects([text as NSString])
+    }
+
+    func clipboardRead(source: TerminalView) -> Data? {
+        guard trustPolicy.clipboardAccess == .readWrite,
+              let text = NSPasteboard.general.string(forType: .string) else {
+            return nil
+        }
+        return text.data(using: .utf8)
+    }
+
+    func iTermContent(source: TerminalView, content: ArraySlice<UInt8>) {}
+
+    nonisolated func dataReceived(slice: ArraySlice<UInt8>) {
+        let result = outputPipeline.process(slice)
+        guard !result.bytes.isEmpty else { return }
+
+#if DEBUG
+        debugHostObserver.emit(result.bytes)
+#endif
+        feed(byteArray: result.bytes[...])
+        let signals = result.signals
+        let hasSignals = signals.controlCEcho
+            || signals.inputProbe
+            || signals.programmaticInputProbe
+            || !signals.semanticEvents.isEmpty
+            || !signals.completedCommands.isEmpty
+        if hasSignals {
+            Task { @MainActor [weak self] in
+                self?.handleOutputSignals(signals)
+            }
+        }
+
+        if result.bytes.contains(0x0A), outputPipeline.claimPromptInspection() {
+            let pipeline = outputPipeline
+            Task { @MainActor [weak self] in
+                defer { pipeline.completePromptInspection() }
+                try? await Task.sleep(for: .milliseconds(140))
+                guard let self, process.running else { return }
+                reportPromptReadiness(promptReadySnapshot)
+            }
+        }
+    }
+
+    nonisolated func getWindowSize() -> winsize {
+        outputPipeline.windowSize()
+    }
+
+    nonisolated func processTerminated(_ source: LocalProcess, exitCode: Int32?) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            processDelegate?.processTerminated(source: self, exitCode: exitCode)
+        }
+    }
+
+    nonisolated override func bufferActivated(source: Terminal) {
+        let alternate = source.isCurrentBufferAlternate
+        super.bufferActivated(source: source)
+        Task { @MainActor [weak self] in
+            self?.isAlternateBufferActive = alternate
+        }
+    }
+
+#if DEBUG
+    var debugIsAlternateBufferActive: Bool { isAlternateBufferActive }
+    var debugBufferText: String {
+        String(decoding: getBufferAsData(kind: .active), as: UTF8.self)
+    }
+#endif
+
+    private func computeWindowSize() -> winsize {
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
+        let dimensions = terminalDimensions
+        let pxW = Int(max(0, bounds.width) * scale)
+        let pxH = Int(max(0, bounds.height) * scale)
+        return winsize(
+            ws_row: UInt16(clamping: dimensions.rows),
+            ws_col: UInt16(clamping: dimensions.cols),
+            ws_xpixel: UInt16(clamping: pxW),
+            ws_ypixel: UInt16(clamping: pxH)
+        )
+    }
+
+    private func syncProcessWindowSize(updatePTY: Bool = true) {
+        var size = computeWindowSize()
+        outputPipeline.updateWindowSize(size)
+        if updatePTY, process.running, process.childfd >= 0 {
+            _ = PseudoTerminalHelpers.setWinSize(
+                masterPtyDescriptor: process.childfd,
+                windowSize: &size
+            )
+        }
     }
 
     func prepareForProcessStart(trustPolicy: TerminalEscapeSequenceTrustPolicy) {
         cancelControlCRecovery()
-        trustFilter.policy = trustPolicy
-        trustFilter.resetStreamState()
-        inlineImageFilter.resetStreamState()
-        kittyGraphicsFilter.resetStreamState()
-        sixelFilter.resetStreamState()
-        streamParser = ShellIntegrationStreamParser()
+        self.trustPolicy = trustPolicy
+        outputPipeline.updateTrustPolicy(trustPolicy)
+        outputPipeline.updateInlineImagePolicy(inlineImageSafetyPolicy)
+        outputPipeline.resetStreamState()
         promptReadinessTask?.cancel()
         promptReadinessTask = nil
         reportPromptReadiness(false)
@@ -1338,11 +1491,7 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
         promptReadinessTask = nil
         reportPromptReadiness(false)
         cancelControlCRecovery()
-        trustFilter.resetStreamState()
-        inlineImageFilter.resetStreamState()
-        kittyGraphicsFilter.resetStreamState()
-        sixelFilter.resetStreamState()
-        streamParser = ShellIntegrationStreamParser()
+        outputPipeline.resetStreamState()
 
         if scope == .processGroup {
             terminateLocalProcessSessionIfSafe()
@@ -1351,20 +1500,16 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
     }
 
     func recoverTerminalModesAfterProcessExit() {
-        trustFilter.resetStreamState()
-        inlineImageFilter.resetStreamState()
-        kittyGraphicsFilter.resetStreamState()
-        sixelFilter.resetStreamState()
-        streamParser = ShellIntegrationStreamParser()
+        outputPipeline.resetStreamState()
 
         // A dead process cannot legitimately own terminal modes anymore. Clear the
         // active buffer's Kitty stack, leave the alternate screen, then clear the
         // normal buffer's stack as well. Other input-affecting private modes are
         // reset without using RIS, so scrollback remains available for diagnosis.
-        terminal.feed(text: "\u{001B}[<17u")
-        terminal.feed(text: "\u{001B}[?1000l\u{001B}[?1002l\u{001B}[?1003l\u{001B}[?1006l")
-        terminal.feed(text: "\u{001B}[?1004l\u{001B}[?2004l\u{001B}[?2026l")
-        terminal.feed(text: "\u{001B}[?1l\u{001B}>\u{001B}[?1049l\u{001B}[<17u\u{001B}[?25h")
+        feed(text: "\u{001B}[<17u")
+        feed(text: "\u{001B}[?1000l\u{001B}[?1002l\u{001B}[?1003l\u{001B}[?1006l")
+        feed(text: "\u{001B}[?1004l\u{001B}[?2004l\u{001B}[?2026l")
+        feed(text: "\u{001B}[?1l\u{001B}>\u{001B}[?1049l\u{001B}[<17u\u{001B}[?25h")
     }
 
     @discardableResult
@@ -1458,12 +1603,23 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        enableMetalRendererWhenAttached()
+        syncProcessWindowSize()
         setInteractionActive(interactionActive)
+    }
+
+    func enableMetalRendererWhenAttached() {
+        guard window != nil, !isUsingMetalRenderer else { return }
+        do {
+            try setUseMetal(true)
+        } catch {
+            // CoreGraphics remains the fail-safe renderer if Metal is unavailable.
+        }
     }
 
     func setInteractionActive(_ active: Bool) {
         interactionActive = active
-        terminal.setCursorStyle(cursorStyle(forActiveState: active))
+        applyCursorStyle(forActiveState: active)
         needsDisplay = true
         layer?.setNeedsDisplay()
 
@@ -1477,15 +1633,18 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
         }
     }
 
-    private func cursorStyle(forActiveState active: Bool) -> CursorStyle {
-        switch terminal.options.cursorStyle {
+    private func applyCursorStyle(forActiveState active: Bool) {
+        let current = terminalStateSnapshot().cursorStyle
+        let parameter: Int
+        switch current {
         case .blinkBlock, .steadyBlock:
-            return active ? .blinkBlock : .steadyBlock
+            parameter = active ? 1 : 2
         case .blinkUnderline, .steadyUnderline:
-            return active ? .blinkUnderline : .steadyUnderline
+            parameter = active ? 3 : 4
         case .blinkBar, .steadyBar:
-            return active ? .blinkBar : .steadyBar
+            parameter = active ? 5 : 6
         }
+        feed(text: "\u{001B}[\(parameter) q")
     }
 
     override func setFrameSize(_ newSize: NSSize) {
@@ -1502,11 +1661,7 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
             try? await Task.sleep(for: .milliseconds(16))
             guard !Task.isCancelled, let self, process.running else { return }
             resizeSyncTask = nil
-            var size = getWindowSize()
-            _ = PseudoTerminalHelpers.setWinSize(
-                masterPtyDescriptor: process.childfd,
-                windowSize: &size
-            )
+            syncProcessWindowSize()
             needsDisplay = true
             layer?.setNeedsDisplay()
         }
@@ -1615,44 +1770,16 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
 
     private func sendApprovedPaste(_ text: String) {
         unmarkText()
-        let bytes = TerminalPastePayload.bytes(
-            for: text,
-            bracketed: terminal.bracketedPasteMode
-        )
-        send(source: self, data: bytes[...])
+        // SwiftTerm owns bracketed-paste framing behind its concurrency boundary.
+        // Do not substitute clipboard contents that changed after user approval.
+        guard NSPasteboard.general.string(forType: .string) == text else { return }
+        super.paste(self)
     }
 
-    /// SwiftTerm maps wheel events to Up/Down while an alternate buffer is active.
-    /// tmux can keep that buffer active at a normal shell prompt, which accidentally
-    /// walks shell history. Only mouse-aware TUIs retain wheel reporting; otherwise
-    /// the wheel always moves the terminal viewport.
+    /// Next-generation SwiftTerm owns mouse reporting, alternate-scroll mode,
+    /// precise trackpad accumulation, and normal scrollback routing.
     func handleApexScrollWheel(_ event: NSEvent) {
-        let verticalDelta = event.scrollingDeltaY != 0
-            ? event.scrollingDeltaY
-            : event.deltaY
-        guard verticalDelta != 0 else { return }
-        if terminal.isCurrentBufferAlternate, terminal.mouseMode != .off {
-            super.scrollWheel(with: event)
-            return
-        }
-
-        let delta = Int(abs(verticalDelta).rounded(.up))
-        let lines: Int
-        if delta > 9 {
-            lines = max(terminal.rows, 20)
-        } else if delta > 5 {
-            lines = 10
-        } else if delta > 1 {
-            lines = 3
-        } else {
-            lines = 1
-        }
-
-        if verticalDelta > 0 {
-            scrollUp(lines: lines)
-        } else {
-            scrollDown(lines: lines)
-        }
+        super.scrollWheel(with: event)
     }
 
     func requestFocusWhenReady() {
@@ -1686,6 +1813,10 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
         scrollProbeFile = environment["APEXTERM_SCROLL_PROBE_FILE"]
         scrollProbeMarker = environment["APEXTERM_SCROLL_PROBE_MARKER"]
             ?? "APT_SCROLL_PROBE_DONE"
+        outputPipeline.configureProbeMarkers(
+            input: inputProbeMarker,
+            programmaticInput: programmaticInputProbeMarker
+        )
     }
 
     func startInputProbeWhenReady() {
@@ -1744,64 +1875,31 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
         }
     }
 
-    override func dataReceived(slice: ArraySlice<UInt8>) {
-        let clipboardFiltered = trustFilter.feed(slice)
-        guard !clipboardFiltered.isEmpty else { return }
-        let imageFiltered = inlineImageFilter.feed(clipboardFiltered[...])
-        guard !imageFiltered.isEmpty else { return }
-        let kittyFiltered = kittyGraphicsFilter.feed(imageFiltered[...])
-        guard !kittyFiltered.isEmpty else { return }
-        let sixelFiltered = sixelFilter.feed(kittyFiltered[...])
-        guard !sixelFiltered.isEmpty else { return }
-        let trustedSlice = sixelFiltered[...]
-
-        onHostData?(trustedSlice)
-        inspectControlCEcho(trustedSlice)
-        inspectInputProbe(trustedSlice)
-        inspectProgrammaticInputProbe(trustedSlice)
-
-        if streamParser.canBypass(trustedSlice) {
-            processTerminalData(trustedSlice)
-            enforceInactiveCursorStyle()
-            return
+    private func handleOutputSignals(_ signals: ApexTerminalOutputSignals) {
+        if signals.controlCEcho {
+            inspectControlCEcho()
         }
-
-        let segments = streamParser.feed(trustedSlice)
-        for segment in segments {
-            switch segment {
-            case let .data(bytes):
-                processTerminalData(bytes[...])
-            case let .marker(raw, event):
-                super.dataReceived(slice: raw[...])
-                if let event {
-                    handleSemanticEvent(event)
-                }
-            }
+        if signals.inputProbe {
+            inspectInputProbe()
         }
-        enforceInactiveCursorStyle()
+        if signals.programmaticInputProbe {
+            inspectProgrammaticInputProbe()
+        }
+        for event in signals.semanticEvents {
+            handleSemanticEvent(event)
+        }
+        for completed in signals.completedCommands {
+            handleCompletedCommand(completed)
+        }
     }
 
     private func enforceInactiveCursorStyle() {
         guard !interactionActive else { return }
-        terminal.setCursorStyle(cursorStyle(forActiveState: false))
-    }
-
-    private func processTerminalData(_ bytes: ArraySlice<UInt8>) {
-        appendCapturedOutput(bytes)
-        let beforeRow = terminal.buffer.y
-        var lineAdvances = 0
-        for byte in bytes where byte == 0x0A {
-            lineAdvances += 1
-        }
-        super.dataReceived(slice: bytes)
-        let shiftedRows = max(0, beforeRow + lineAdvances - terminal.buffer.y)
-        if shiftedRows > 0 {
-            onTerminalRowsShifted?(shiftedRows)
-        }
-        schedulePromptReadinessInspection()
+        applyCursorStyle(forActiveState: false)
     }
 
     func handleSemanticEvent(_ event: ShellSemanticEvent) {
+        onSemanticEvent?(event)
         switch event {
         case .promptStarted:
             cancelControlCRecovery()
@@ -1812,7 +1910,9 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
         case .commandInputStarted:
             promptReadinessTask?.cancel()
             promptReadinessTask = nil
-            onPromptStarted?(terminal.buffer.y)
+            let state = terminalStateSnapshot()
+            let absoluteRow = state.viewportRow + state.cursor.row
+            onPromptStarted?(absoluteRow)
             reportPromptReadiness(true)
         case let .commandCaptured(command):
             reportPromptReadiness(false)
@@ -1825,11 +1925,20 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
             reportPromptReadiness(false)
             isCapturingOutput = true
             notifyCaptureStateChanged()
-        case let .commandFinished(exitCode):
+        case .commandFinished:
             reportPromptReadiness(false)
             isCapturingOutput = false
-            finalizeCapturedCommand(exitCode: exitCode ?? 0)
+            notifyCaptureStateChanged()
         }
+    }
+
+    private func handleCompletedCommand(_ completed: ApexTerminalCompletedCommand) {
+        capturedCommand = completed.command
+        capturedOutput = completed.output
+        commandStartedAt = completed.startedAt
+        outputWasTruncated = completed.outputWasTruncated
+        isCapturingOutput = false
+        finalizeCapturedCommand(exitCode: completed.exitCode)
     }
 
     private func schedulePromptReadinessInspection() {
@@ -1851,12 +1960,10 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
     }
 
     private func clearResidualKittyKeyboardModeAtPrompt() {
-        guard !terminal.keyboardEnhancementFlags.isEmpty else { return }
-
-        // A TUI can terminate before restoring the Kitty keyboard mode it pushed.
-        // Pop beyond SwiftTerm's 16-entry stack limit at a fresh shell prompt so
-        // Control-C returns to the legacy 0x03 byte expected by the PTY line discipline.
-        terminal.feed(text: "\u{001B}[<17u")
+        // The mode stack is intentionally bounded to 16 entries. Popping 17 times
+        // is idempotent at a real shell prompt and avoids reaching into mutable
+        // SwiftTerm parser state merely to decide whether recovery is necessary.
+        feed(text: "\u{001B}[<17u")
     }
 
     func setLocalControlCRecoveryEnabled(_ enabled: Bool) {
@@ -1877,6 +1984,7 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
     }
 
     private func armControlCRecovery() {
+        outputPipeline.setObservesControlCEcho(true)
         let now = Date()
         let repeated = lastControlCAt.map { now.timeIntervalSince($0) < 1.5 } ?? false
         lastControlCAt = now
@@ -1891,11 +1999,10 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
         scheduleControlCRecovery(after: repeated ? .milliseconds(120) : .milliseconds(250))
     }
 
-    private func inspectControlCEcho(_ bytes: ArraySlice<UInt8>) {
+    private func inspectControlCEcho() {
         guard localControlCRecoveryEnabled,
               let armedUntil = controlCRecoveryArmedUntil,
-              Date() <= armedUntil,
-              String(decoding: bytes, as: UTF8.self).contains("^C") else {
+              Date() <= armedUntil else {
             return
         }
         scheduleControlCRecovery(after: .milliseconds(250))
@@ -1909,7 +2016,7 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
             defer { cancelControlCRecovery() }
             guard localControlCRecoveryEnabled,
                   process.running,
-                  (!terminal.isCurrentBufferAlternate || controlCRecoveryAllowsAlternateScreen),
+                  (!isAlternateBufferActive || controlCRecoveryAllowsAlternateScreen),
                   let processSession = LocalTerminalProcessSession(rootPID: process.shellPid) else {
                 return
             }
@@ -1922,19 +2029,7 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
         controlCRecoveryTask = nil
         controlCRecoveryArmedUntil = nil
         controlCRecoveryAllowsAlternateScreen = false
-    }
-
-    private func appendCapturedOutput(_ bytes: ArraySlice<UInt8>) {
-        guard isCapturingOutput, !bytes.isEmpty else { return }
-        let remaining = Self.maximumCapturedOutputBytes - capturedOutput.count
-        guard remaining > 0 else {
-            outputWasTruncated = true
-            return
-        }
-        capturedOutput.append(contentsOf: bytes.prefix(remaining))
-        if bytes.count > remaining {
-            outputWasTruncated = true
-        }
+        outputPipeline.setObservesControlCEcho(false)
     }
 
     private func finalizeCapturedCommand(exitCode: Int) {
@@ -1977,9 +2072,7 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
             try? await Task.sleep(for: .milliseconds(4_000))
             guard let self else { return }
 
-            let mouseModeEnabled = terminal.mouseMode != .off
-            let alternateBuffer = terminal.isCurrentBufferAlternate
-            let scrollPositionBefore = terminal.buffer.yDisp
+            let scrollPositionBefore = scrollPosition
             let event = CGEvent(
                 scrollWheelEvent2Source: nil,
                 units: .line,
@@ -1993,12 +2086,10 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
             }
 
             try? await Task.sleep(for: .milliseconds(350))
-            let scrollPositionAfter = terminal.buffer.yDisp
+            let scrollPositionAfter = scrollPosition
             let payload = [
                 "command_captured=1",
                 "output_captured=\(record.output.contains(marker) ? 1 : 0)",
-                "mouse_mode=\(mouseModeEnabled ? 1 : 0)",
-                "alternate_buffer=\(alternateBuffer ? 1 : 0)",
                 "scroll_event_sent=\(event == nil ? 0 : 1)",
                 "scrollback_changed=\(scrollPositionBefore != scrollPositionAfter ? 1 : 0)",
                 "scroll_position_before=\(scrollPositionBefore)",
@@ -2026,11 +2117,8 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
         }
     }
 
-    private func inspectProgrammaticInputProbe(_ slice: ArraySlice<UInt8>) {
-        guard let marker = programmaticInputProbeMarker,
-              let text = String(bytes: slice, encoding: .utf8),
-              text.contains(marker),
-              let path = programmaticInputProbeFile else { return }
+    private func inspectProgrammaticInputProbe() {
+        guard let path = programmaticInputProbeFile else { return }
         let payload = "programmatic_input=1\nprocess=\(process.running ? 1 : 0)\n"
         try? Data(payload.utf8).write(
             to: URL(fileURLWithPath: path),
@@ -2039,19 +2127,15 @@ final class ApexLocalProcessTerminalView: LocalProcessTerminalView {
         programmaticInputProbeMarker = nil
     }
 
-    private func inspectInputProbe(_ slice: ArraySlice<UInt8>) {
-        if let marker = inputProbeMarker,
-           let text = String(bytes: slice, encoding: .utf8),
-           text.contains(marker),
-           let inputProbeFile {
-            let focus = window?.firstResponder === self ? 1 : 0
-            let payload = "input=1\nfocus=\(focus)\nprocess=\(process.running ? 1 : 0)\n"
-            try? Data(payload.utf8).write(
-                to: URL(fileURLWithPath: inputProbeFile),
-                options: [.atomic]
-            )
-            inputProbeMarker = nil
-        }
+    private func inspectInputProbe() {
+        guard let inputProbeFile else { return }
+        let focus = window?.firstResponder === self ? 1 : 0
+        let payload = "input=1\nfocus=\(focus)\nprocess=\(process.running ? 1 : 0)\n"
+        try? Data(payload.utf8).write(
+            to: URL(fileURLWithPath: inputProbeFile),
+            options: [.atomic]
+        )
+        inputProbeMarker = nil
     }
 }
 

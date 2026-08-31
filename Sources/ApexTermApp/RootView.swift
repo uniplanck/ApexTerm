@@ -1839,7 +1839,7 @@ struct RootView: View {
                 TerminalPaneRuntimeStore.shared.container(for: $0)
             }
             let processRunning = container?.terminal.process.running == true
-            let bufferData = container?.terminal.terminal.getBufferAsData(kind: .active) ?? Data()
+            let bufferData = container?.terminal.getBufferAsData(kind: .active) ?? Data()
             let bufferText = String(decoding: bufferData, as: UTF8.self)
             let heuristicReady = TerminalPromptHeuristic.isPromptReady(bufferText: bufferText)
             let lastNonEmptyLine = bufferText
@@ -2070,7 +2070,7 @@ struct RootView: View {
         let scheduledTerminal = TerminalPaneRuntimeStore.shared.container(
             for: sessionID
         )?.terminal
-        let scheduledBufferData = scheduledTerminal?.terminal.getBufferAsData(
+        let scheduledBufferData = scheduledTerminal?.getBufferAsData(
             kind: .active
         ) ?? Data()
         let scheduledBufferText = String(decoding: scheduledBufferData, as: UTF8.self)
