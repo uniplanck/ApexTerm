@@ -2321,7 +2321,9 @@ final class AppModel: ObservableObject {
 
     func selectSession(_ sessionID: UUID) {
         guard sessions.contains(where: { $0.id == sessionID }) else { return }
-        selectedSessionID = sessionID
+        if selectedSessionID != sessionID {
+            selectedSessionID = sessionID
+        }
         if let workspaceIndex = workspaces.firstIndex(where: {
             SplitTreeOperations.contains(sessionID: sessionID, in: $0.layout)
         }) {

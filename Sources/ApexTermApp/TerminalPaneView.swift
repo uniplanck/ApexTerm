@@ -45,6 +45,7 @@ struct TerminalPaneView: NSViewRepresentable {
             host.noteConfigured(session)
         }
         let didAttach = host.attach(container)
+        container.setInteractionActive(isActive)
         if didAttach {
             container.prepareForPresentation()
         }
@@ -670,7 +671,6 @@ final class ApexTerminalContainerView: NSView {
     private var promptDecorations: [PromptDecoration] = []
     private var selectedDecoration: PromptDecoration?
     private var scrollMonitor: Any?
-    private var keyMonitor: Any?
     private var visibilityObservers: [NSObjectProtocol] = []
     private let promptProbePath = ProcessInfo.processInfo.environment[
         "APEXTERM_PROMPT_DECORATION_PROBE_FILE"
@@ -726,7 +726,6 @@ final class ApexTerminalContainerView: NSView {
 
     func prepareForPresentation() {
         installScrollMonitor()
-        installKeyMonitor()
         installVisibilityObservers()
         needsLayout = true
         layoutSubtreeIfNeeded()
@@ -747,7 +746,6 @@ final class ApexTerminalContainerView: NSView {
     func prepareForDetachment() {
         terminal.cancelPendingFocusRequest()
         removeScrollMonitor()
-        removeKeyMonitor()
         removeVisibilityObservers()
     }
 
@@ -825,27 +823,6 @@ final class ApexTerminalContainerView: NSView {
         }
     }
 
-    private func installKeyMonitor() {
-        removeKeyMonitor()
-        guard window != nil else { return }
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self,
-                  event.window === window,
-                  window?.firstResponder === terminal else {
-                return event
-            }
-            terminal.handleApexKeyDown(event)
-            return event
-        }
-    }
-
-    private func removeKeyMonitor() {
-        if let keyMonitor {
-            NSEvent.removeMonitor(keyMonitor)
-            self.keyMonitor = nil
-        }
-    }
-
     private func installVisibilityObservers() {
         removeVisibilityObservers()
         let center = NotificationCenter.default
@@ -886,7 +863,6 @@ final class ApexTerminalContainerView: NSView {
     func invalidate() {
         terminal.cancelPendingFocusRequest()
         removeScrollMonitor()
-        removeKeyMonitor()
         terminal.onPromptStarted = nil
         removeAllPromptDecorations()
     }
@@ -1134,6 +1110,23 @@ protocol ApexLocalProcessTerminalViewDelegate: AnyObject {
     func processTerminated(source: ApexLocalProcessTerminalView, exitCode: Int32?)
 }
 
+private final class ApexTerminalRuntimeModeState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var alternateBufferActive = false
+
+    func setAlternateBufferActive(_ active: Bool) {
+        lock.lock()
+        alternateBufferActive = active
+        lock.unlock()
+    }
+
+    func isAlternateBufferActive() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return alternateBufferActive
+    }
+}
+
 final class ApexLocalProcessTerminalView: TerminalView, TerminalViewDelegate, LocalProcessDelegate {
     weak var processDelegate: ApexLocalProcessTerminalViewDelegate?
     var onSemanticEvent: ((ShellSemanticEvent) -> Void)?
@@ -1162,9 +1155,11 @@ final class ApexLocalProcessTerminalView: TerminalView, TerminalViewDelegate, Lo
     private var controlCRecoveryArmedUntil: Date?
     private var controlCRecoveryAllowsAlternateScreen = false
     private var lastControlCAt: Date?
+    private var lastControlCKeyEventAt: Date?
     private var localControlCRecoveryEnabled = false
     private var commandSessionID: UUID?
     nonisolated private let outputPipeline = ApexTerminalOutputPipeline()
+    nonisolated private let runtimeModeState = ApexTerminalRuntimeModeState()
 #if DEBUG
     nonisolated private let debugHostObserver = ApexTerminalDebugHostObserver()
     var onHostData: ((ArraySlice<UInt8>) -> Void)? {
@@ -1173,9 +1168,9 @@ final class ApexLocalProcessTerminalView: TerminalView, TerminalViewDelegate, Lo
 #endif
     private var trustPolicy = TerminalEscapeSequenceTrustPolicy.localDefault
     private var inlineImageSafetyPolicy = TerminalInlineImageSafetyPolicy.localDefault
-    private var isAlternateBufferActive = false
     private var programmaticInputEnabled = false
     private var interactionActive = false
+    private var forcedSelectionDragActive = false
     private var capturedCommand = ""
     private var capturedOutput: [UInt8] = []
     private var commandStartedAt: Date?
@@ -1229,7 +1224,7 @@ final class ApexLocalProcessTerminalView: TerminalView, TerminalViewDelegate, Lo
     }
 
     var promptReadySnapshot: Bool {
-        guard process.running, !isAlternateBufferActive else {
+        guard process.running, !runtimeModeState.isAlternateBufferActive() else {
             return false
         }
         let data = getBufferAsData(kind: .active)
@@ -1363,6 +1358,15 @@ final class ApexLocalProcessTerminalView: TerminalView, TerminalViewDelegate, Lo
     }
 
     func send(source: TerminalView, data: ArraySlice<UInt8>) {
+        if localControlCRecoveryEnabled, data.count == 1, data.first == 0x03 {
+            let now = Date()
+            let alreadyHandledByKeyEvent = lastControlCKeyEventAt.map {
+                now.timeIntervalSince($0) < 0.10
+            } ?? false
+            if !alreadyHandledByKeyEvent {
+                armControlCRecovery()
+            }
+        }
         process.send(data: data)
     }
 
@@ -1431,15 +1435,14 @@ final class ApexLocalProcessTerminalView: TerminalView, TerminalViewDelegate, Lo
     }
 
     nonisolated override func bufferActivated(source: Terminal) {
-        let alternate = source.isCurrentBufferAlternate
+        runtimeModeState.setAlternateBufferActive(source.isCurrentBufferAlternate)
         super.bufferActivated(source: source)
-        Task { @MainActor [weak self] in
-            self?.isAlternateBufferActive = alternate
-        }
     }
 
 #if DEBUG
-    var debugIsAlternateBufferActive: Bool { isAlternateBufferActive }
+    var debugIsAlternateBufferActive: Bool {
+        runtimeModeState.isAlternateBufferActive()
+    }
     var debugBufferText: String {
         String(decoding: getBufferAsData(kind: .active), as: UTF8.self)
     }
@@ -1672,58 +1675,85 @@ final class ApexLocalProcessTerminalView: TerminalView, TerminalViewDelegate, Lo
     }
 
     override func mouseDown(with event: NSEvent) {
-        onActivate?()
+        if !interactionActive {
+            onActivate?()
+        }
         cancelPendingFocusRequest()
         window?.makeFirstResponder(self)
 
-        let forceSelection = forceApexSelection(for: event)
-        let previousMouseReporting = allowMouseReporting
-        if forceSelection {
-            // SwiftTerm normally lets Shift bypass TUI mouse reporting, but a TUI
-            // can claim Shift via XTSHIFTESCAPE. ApexTerm reserves Shift-drag as a
-            // reliable local selection escape hatch without changing TUI mouse mode.
-            allowMouseReporting = false
-        }
-        defer {
-            if forceSelection {
-                allowMouseReporting = previousMouseReporting
+        forcedSelectionDragActive = shouldForceTerminalSelection(event)
+        if forcedSelectionDragActive {
+            withMouseReportingDisabled {
+                super.mouseDown(with: event)
             }
+        } else {
+            super.mouseDown(with: event)
         }
-        super.mouseDown(with: event)
     }
 
     override func mouseDragged(with event: NSEvent) {
-        let forceSelection = forceApexSelection(for: event)
-        let previousMouseReporting = allowMouseReporting
-        if forceSelection {
-            allowMouseReporting = false
-        }
-        defer {
-            if forceSelection {
-                allowMouseReporting = previousMouseReporting
+        if forcedSelectionDragActive || shouldForceTerminalSelection(event) {
+            forcedSelectionDragActive = true
+            withMouseReportingDisabled {
+                super.mouseDragged(with: event)
             }
+            return
         }
         super.mouseDragged(with: event)
     }
 
     override func mouseUp(with event: NSEvent) {
-        let forceSelection = forceApexSelection(for: event)
-        let previousMouseReporting = allowMouseReporting
-        if forceSelection {
-            allowMouseReporting = false
-        }
-        defer {
-            if forceSelection {
-                allowMouseReporting = previousMouseReporting
+        let forcedSelection = forcedSelectionDragActive || shouldForceTerminalSelection(event)
+        defer { forcedSelectionDragActive = false }
+        if forcedSelection {
+            withMouseReportingDisabled {
+                super.mouseUp(with: event)
             }
+            return
         }
         super.mouseUp(with: event)
     }
 
+    override func viewDidEndLiveResize() {
+        super.viewDidEndLiveResize()
+        guard bounds.width > 0, bounds.height > 0 else { return }
+
+        // SwiftTerm throttles Metal redraws while AppKit reports a live resize.
+        // Re-run the final frame/grid path after `inLiveResize` becomes false,
+        // then explicitly synchronize the PTY winsize so renderer and child TUI
+        // finish on the same rows/cols even when intermediate resize events coalesce.
+        setFrameSize(frame.size)
+        if process.running {
+            let dimensions = terminalDimensions
+            sizeChanged(
+                source: self,
+                newCols: dimensions.cols,
+                newRows: dimensions.rows
+            )
+        }
+        needsDisplay = true
+        layer?.setNeedsDisplay()
+        displayIfNeeded()
+    }
+
     func handleApexKeyDown(_ event: NSEvent) {
         if localControlCRecoveryEnabled, isControlC(event) {
+            lastControlCKeyEventAt = Date()
             armControlCRecovery()
         }
+    }
+
+    private func shouldForceTerminalSelection(_ event: NSEvent) -> Bool {
+        event.modifierFlags
+            .intersection(.deviceIndependentFlagsMask)
+            .contains(.shift)
+    }
+
+    private func withMouseReportingDisabled(_ action: () -> Void) {
+        let previous = allowMouseReporting
+        allowMouseReporting = false
+        defer { allowMouseReporting = previous }
+        action()
     }
 
     override func rightMouseDown(with event: NSEvent) {
@@ -1905,7 +1935,7 @@ final class ApexLocalProcessTerminalView: TerminalView, TerminalViewDelegate, Lo
             cancelControlCRecovery()
             promptReadinessTask?.cancel()
             promptReadinessTask = nil
-            clearResidualKittyKeyboardModeAtPrompt()
+            recoverResidualInputModesAtPrompt()
             reportPromptReadiness(true)
         case .commandInputStarted:
             promptReadinessTask?.cancel()
@@ -1959,11 +1989,21 @@ final class ApexLocalProcessTerminalView: TerminalView, TerminalViewDelegate, Lo
         }
     }
 
-    private func clearResidualKittyKeyboardModeAtPrompt() {
-        // The mode stack is intentionally bounded to 16 entries. Popping 17 times
-        // is idempotent at a real shell prompt and avoids reaching into mutable
-        // SwiftTerm parser state merely to decide whether recovery is necessary.
+    private func recoverResidualInputModesAtPrompt() {
+        // The Kitty mode stack is bounded to 16 entries. Popping 17 times is
+        // idempotent at a real shell prompt and avoids reaching into SwiftTerm's
+        // mutable parser state merely to decide whether recovery is necessary.
         feed(text: "\u{001B}[<17u")
+
+        // Plain local shells enable Control-C recovery; tmux/remote sessions do not.
+        // Reaching the shell prompt means a foreground TUI has relinquished the PTY.
+        // Clear stale mouse reporting unconditionally; DEC reset sequences are
+        // idempotent and this keeps the next-gen parser boundary lock-free here.
+        guard localControlCRecoveryEnabled else { return }
+        feed(text: "\u{001B}[?1000l\u{001B}[?1002l\u{001B}[?1003l\u{001B}[?1006l")
+        if runtimeModeState.isAlternateBufferActive() {
+            feed(text: "\u{001B}[?1049l")
+        }
     }
 
     func setLocalControlCRecoveryEnabled(_ enabled: Bool) {
@@ -2016,7 +2056,7 @@ final class ApexLocalProcessTerminalView: TerminalView, TerminalViewDelegate, Lo
             defer { cancelControlCRecovery() }
             guard localControlCRecoveryEnabled,
                   process.running,
-                  (!isAlternateBufferActive || controlCRecoveryAllowsAlternateScreen),
+                  (!runtimeModeState.isAlternateBufferActive() || controlCRecoveryAllowsAlternateScreen),
                   let processSession = LocalTerminalProcessSession(rootPID: process.shellPid) else {
                 return
             }
